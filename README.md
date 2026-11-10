@@ -13,19 +13,21 @@ Panel features:
 
 ### Open the panel
 
-The panel listens only on `127.0.0.1:8787` on the VPS. On your computer, open an SSH tunnel (replace the SSH user/IP with your existing VPS login):
+The panel is hosted directly on your VPS over HTTPS, on port **8787**. Open:
 
 ```bash
-ssh -L 8787:127.0.0.1:8787 root@YOUR_VPS_IP
+https://YOUR_VPS_IP:8787
 ```
 
-Keep that terminal connected and open **http://127.0.0.1:8787** on your computer. Username: **admin**. Retrieve the generated password on the VPS:
+No SSH tunnel is required. Username: **admin**. Retrieve the generated password on the VPS:
 
 ```bash
 sudo cat /etc/wireguard/wg-auto-panel/password
 ```
 
-Do not expose port 8787 over plain public HTTP. The SSH tunnel protects credentials and private config downloads without requiring a domain or TLS setup. Config downloads contain private keys.
+The installer generates a self-signed TLS certificate automatically, so the browser displays a certificate warning on first access. Allow **TCP 8787** in your VPS provider's cloud firewall if one is enabled; the service adds its own host firewall rule automatically. Config downloads contain private keys and authentication is required for all panel pages and API routes. Public HTTPS access supports concurrent connections, serializes VPN changes, and limits failed password attempts per IP.
+
+If you installed the earlier tunnel-only panel, rerun the curl installation command below once to migrate to public HTTPS. Use that command for this migration rather than the old updater, which expects an HTTP-only health check. Your password, keys and clients are retained. Later upgrades work through the update button or `sudo wg-auto-update`.
 
 Changing the advertised endpoint does not change the server's actual listening port or create another server. For example, advertising port 443 requires a working UDP port mapping from public 443 to the server's current listening port. Existing imported configs do not update themselves: download and import a replacement after changing settings. Revocation disconnects the peer; the old `/root/wireguard-client.conf` file may still exist but no longer grants access once its peer is revoked.
 

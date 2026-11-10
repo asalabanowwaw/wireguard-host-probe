@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local-only WireGuard administration; access through an SSH tunnel."""
+"""Password-protected WireGuard administration over public HTTPS."""
 import base64
 import hmac
 import ipaddress
@@ -8,16 +8,21 @@ import os
 from pathlib import Path
 import re
 import secrets
+import ssl
 import subprocess
 import tempfile
 import time
 import traceback
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 ROOT = Path(os.environ.get('WG_AUTO_DATA', '/etc/wireguard/wg-auto-panel'))
 CONFIG = Path(os.environ.get('WG_AUTO_CONFIG', '/etc/wireguard/wgauto0.conf'))
 ORIGINAL_CLIENT = Path('/root/wireguard-client.conf')
 IFACE = 'wgauto0'
+MUTATION_LOCK = threading.Lock()
+AUTH_LOCK = threading.Lock()
+AUTH_FAILURES = {}
 
 
 def run(*args, data=None):
@@ -131,6 +136,38 @@ PersistentKeepalive = 25
 """
 
 
+def make_server(host='0.0.0.0', port=8787):
+    cert, key = ROOT / 'tls.crt', ROOT / 'tls.key'
+    if not cert.exists() or not key.exists():
+        name = load()['host']
+        try:
+            ipaddress.ip_address(name)
+            san = 'IP:' + name
+        except ValueError:
+            san = 'DNS:' + name
+        run('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-sha256', '-nodes',
+            '-days', '3650', '-keyout', str(key), '-out', str(cert),
+            '-subj', '/CN=WireGuard Panel', '-addext', 'subjectAltName=' + san + ',IP:127.0.0.1')
+        key.chmod(0o600)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(cert, key)
+    server = PanelServer((host, port), Handler)
+    server.tls_context = context
+    return server
+
+
+class PanelServer(ThreadingHTTPServer):
+    def get_request(self):
+        sock, address = super().get_request()
+        sock.settimeout(10)
+        try:
+            return self.tls_context.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), address
+        except Exception:
+            sock.close()
+            raise
+
+
 def settings(state, body):
     host = str(body.get('host', '')).strip()
     if len(host) > 253 or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?', host):
@@ -177,10 +214,27 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def authorized(self):
+        address, now = self.client_address[0], time.monotonic()
+        with AUTH_LOCK:
+            failures, start = AUTH_FAILURES.get(address, (0, now))
+            if now - start > 60:
+                failures, start = 0, now
+            limited = failures >= 10
+        if limited:
+            self.send(429, {'error': 'Too many failed logins. Try again in one minute.'})
+            return False
         expected = 'Basic ' + base64.b64encode(('admin:' + (ROOT / 'password').read_text().strip()).encode()).decode()
         if not hmac.compare_digest(self.headers.get('Authorization', ''), expected):
+            # Visiting the login prompt without credentials is not a failed password.
+            if self.headers.get('Authorization'):
+                with AUTH_LOCK:
+                    if len(AUTH_FAILURES) > 10000:
+                        AUTH_FAILURES.clear()
+                    AUTH_FAILURES[address] = (failures + 1, start)
             self.send(401, {'error': 'Authentication required'})
             return False
+        with AUTH_LOCK:
+            AUTH_FAILURES.pop(address, None)
         return True
 
     def do_GET(self):
@@ -214,6 +268,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send(500, {'error': 'Unable to read panel state. Check the service journal.'})
 
     def do_POST(self):
+        if not MUTATION_LOCK.acquire(blocking=False):
+            return self.send(409, {'error': 'Another operation is running. Try again shortly.'})
+        try:
+            self.post_locked()
+        finally:
+            MUTATION_LOCK.release()
+
+    def post_locked(self):
         if not self.authorized():
             return
         # Custom header prevents browser form/CSRF requests; no cross-origin CORS access.
@@ -270,7 +332,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     os.umask(0o077)
     initialize()
-    server = HTTPServer(('127.0.0.1', 8787), Handler)
+    server = make_server()
     server.timeout = 15
     server.socket.settimeout(15)
     server.serve_forever()

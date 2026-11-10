@@ -8,7 +8,12 @@ flock -n 8 || { echo 'An update is already running.'; exit 1; }
 if [[ ${1:-} == --install ]]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y python3 curl ca-certificates tar
+  apt-get install -y python3 curl ca-certificates tar openssl
+fi
+if ! command -v openssl >/dev/null; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y openssl
 fi
 base=/opt/wg-auto
 install -d -m 700 "$base/releases" /etc/wireguard/wg-auto-panel
@@ -48,6 +53,8 @@ Restart=on-failure
 RestartSec=3
 UMask=0077
 Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/bin/sh -c '/usr/sbin/iptables -C INPUT -p tcp --dport 8787 -m comment --comment wg-auto-panel -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I INPUT 1 -p tcp --dport 8787 -m comment --comment wg-auto-panel -j ACCEPT'
+ExecStopPost=/bin/sh -c '/usr/sbin/iptables -D INPUT -p tcp --dport 8787 -m comment --comment wg-auto-panel -j ACCEPT 2>/dev/null || true'
 
 [Install]
 WantedBy=multi-user.target
@@ -60,7 +67,7 @@ systemctl enable wg-auto-panel
 systemctl restart wg-auto-panel
 healthy=0
 for attempt in $(seq 1 15); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:8787/ || true)
+  code=$(curl -s --cacert /etc/wireguard/wg-auto-panel/tls.crt -o /dev/null -w '%{http_code}' --max-time 2 https://127.0.0.1:8787/ || true)
   if [[ $code == 401 ]] && systemctl is-active --quiet wg-auto-panel; then healthy=1; break; fi
   sleep 1
 done
@@ -75,7 +82,9 @@ if ((healthy == 0)); then
   exit 1
 fi
 echo "Panel installed/updated: $sha"
-echo 'Access securely through SSH: ssh -L 8787:127.0.0.1:8787 YOUR_SSH_USER@YOUR_VPS'
-echo 'Then open http://127.0.0.1:8787 in your browser. Username: admin'
+host=$(python3 -c 'import json; print(json.load(open("/etc/wireguard/wg-auto-panel/state.json"))["host"])')
+echo "Open https://$host:8787 in your browser. Username: admin"
+echo 'The automatically generated certificate is self-signed; your browser will show a certificate warning.'
+echo 'If your provider has a cloud firewall, allow inbound TCP 8787.'
 echo 'Read password: sudo cat /etc/wireguard/wg-auto-panel/password'
 echo 'Future updates: sudo wg-auto-update (or use the panel update button).'

@@ -2,6 +2,10 @@ import base64
 import json
 from pathlib import Path
 import tempfile
+import os
+import shutil
+import ssl
+import subprocess
 import threading
 import unittest
 from unittest.mock import patch
@@ -141,6 +145,34 @@ class PanelTests(unittest.TestCase):
         panel.atomic(panel.ROOT / 'state.json', json.dumps(state))
         panel.initialize()
         self.assertEqual(panel.load()['clients'], [])
+
+    def test_public_https_with_generated_certificate(self):
+        openssl = os.environ.get('OPENSSL_BINARY') or shutil.which('openssl')
+        if not openssl:
+            self.skipTest('OpenSSL is required for the TLS integration test')
+        def generate(*args, data=None):
+            self.assertEqual(args[0], 'openssl')
+            return subprocess.run([openssl, *args[1:]], check=True, capture_output=True, text=True).stdout
+        with patch.object(panel, 'run', side_effect=generate):
+            https = panel.make_server(host='127.0.0.1', port=0)
+        worker = threading.Thread(target=https.serve_forever, daemon=True)
+        worker.start()
+        try:
+            context = ssl.create_default_context(cafile=str(panel.ROOT / 'tls.crt'))
+            url = 'https://127.0.0.1:' + str(https.server_port) + '/api/status'
+            request = Request(url, headers={'Authorization': 'Basic ' + base64.b64encode(b'admin:test-password').decode()})
+            with urlopen(request, context=context, timeout=5) as r:
+                self.assertEqual(r.status, 200)
+                self.assertEqual(json.load(r)['host'], 'vpn.example.com')
+            first_key = (panel.ROOT / 'tls.key').read_bytes()
+        finally:
+            https.shutdown()
+            https.server_close()
+            worker.join()
+        with patch.object(panel, 'run', side_effect=AssertionError('Should reuse certificate')):
+            reused = panel.make_server(host='127.0.0.1', port=0)
+            reused.server_close()
+        self.assertEqual((panel.ROOT / 'tls.key').read_bytes(), first_key)
 
 
 if __name__ == '__main__':
