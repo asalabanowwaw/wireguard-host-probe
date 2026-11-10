@@ -1,4 +1,51 @@
-# WireGuard host probe
+# WireGuard automatic VPS setup and minimal panel
+
+## Panel and updates
+
+The installer now includes a minimal Python panel for the native WireGuard VPS installation. If you used the previous installer, run the same installation command again: it keeps your existing server keys and imports the original client. The Node.js hosting probe remains separate and unchanged.
+
+Panel features:
+
+- Create one client per device, download `.conf` files, and revoke access immediately.
+- View handshake timestamps and traffic counters.
+- Change the advertised endpoint hostname/IP, advertised port, DNS and MTU for client exports.
+- Install project updates with a button or `sudo wg-auto-update`.
+
+### Open the panel
+
+The panel listens only on `127.0.0.1:8787` on the VPS. On your computer, open an SSH tunnel (replace the SSH user/IP with your existing VPS login):
+
+```bash
+ssh -L 8787:127.0.0.1:8787 root@YOUR_VPS_IP
+```
+
+Keep that terminal connected and open **http://127.0.0.1:8787** on your computer. Username: **admin**. Retrieve the generated password on the VPS:
+
+```bash
+sudo cat /etc/wireguard/wg-auto-panel/password
+```
+
+Do not expose port 8787 over plain public HTTP. The SSH tunnel protects credentials and private config downloads without requiring a domain or TLS setup. Config downloads contain private keys.
+
+Changing the advertised endpoint does not change the server's actual listening port or create another server. For example, advertising port 443 requires a working UDP port mapping from public 443 to the server's current listening port. Existing imported configs do not update themselves: download and import a replacement after changing settings. Revocation disconnects the peer; the old `/root/wireguard-client.conf` file may still exist but no longer grants access once its peer is revoked.
+
+### Update without redeploying
+
+```bash
+sudo wg-auto-update
+```
+
+Or select **Install latest update** in the panel. The update runs in a separate systemd job, validates a downloaded GitHub commit, switches the application directory and restarts only the panel. It preserves `/etc/wireguard/wgauto0.conf` and `/etc/wireguard/wg-auto-panel/`, including keys, client records and credentials. A failed panel startup restores the previous application version when available. Updates do not reboot the VPS or restart active WireGuard tunnels. Downloads require access to GitHub's API/codeload endpoints; API rate limits or network failures abort before switching versions.
+
+```bash
+sudo systemctl status wg-auto-panel
+sudo journalctl -u wg-auto-panel -n 50
+sudo journalctl -u 'wg-auto-update-*' -n 50
+```
+
+Server/client configs are backed up before client modifications; failed runtime changes attempt to restore the prior config and state. Updates cannot fix cloud firewall blocks or ISP filtering. The panel manages this installer's `wgauto0` interface, preserving unrelated imported peer blocks. It does not manage arbitrary existing wg-easy installations.
+
+Developer checks: `python -m unittest -v test_panel.py`, `python -m py_compile panel.py`, `bash -n install.sh`, `bash -n update.sh`. Tests use a simulated WireGuard backend; live VPS installation and end-to-end client connectivity still need verification.
 
 ## Automatic VPS installer
 

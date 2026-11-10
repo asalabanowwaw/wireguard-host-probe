@@ -1,0 +1,147 @@
+import base64
+import json
+from pathlib import Path
+import tempfile
+import threading
+import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+import panel
+
+
+class PanelTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.paths = patch.multiple(panel, ROOT=root, CONFIG=root / 'server.conf')
+        self.paths.start()
+        self.state = dict(header='[Interface]\nPrivateKey = server-private\nAddress = 10.203.240.1/24\nListenPort = 51820',
+                          unmanaged=['PublicKey = unmanaged\nAllowedIPs = 10.203.240.3/32'],
+                          clients=[dict(id='0123456789abcdef', name='phone', address='10.203.240.2',
+                                        private='client-private', public='client-public', psk='shared')],
+                          host='vpn.example.com', port=51820, dns='1.1.1.1', mtu=1280,
+                          network='10.203.240.0/24', serverPublic='server-public')
+        panel.atomic(root / 'state.json', json.dumps(self.state))
+        panel.atomic(root / 'password', 'test-password\n')
+        panel.atomic(panel.CONFIG, panel.render_server(self.state))
+        self.commands = []
+
+        def fake_run(*args, data=None):
+            self.commands.append(args)
+            if args[:2] == ('wg', 'genkey'):
+                return 'new-private'
+            if args[:2] == ('wg', 'genpsk'):
+                return 'new-psk'
+            if args[:2] == ('wg', 'pubkey'):
+                return 'new-public'
+            if args[:2] == ('wg-quick', 'strip'):
+                return Path(args[2]).read_text()
+            if args == ('wg', 'show', 'wgauto0', 'dump'):
+                return 'private\tpublic\t51820\toff\nclient-public\tshared\t(none)\t10.203.240.2/32\t0\t123\t456\t25'
+            return ''
+        self.runner = patch.object(panel, 'run', side_effect=fake_run)
+        self.runner.start()
+        self.http = panel.HTTPServer(('127.0.0.1', 0), panel.Handler)
+        self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = 'http://127.0.0.1:' + str(self.http.server_port)
+
+    def tearDown(self):
+        self.http.shutdown()
+        self.http.server_close()
+        self.thread.join()
+        self.runner.stop()
+        self.paths.stop()
+        self.temp.cleanup()
+
+    def request(self, path, body=None, auth=True, csrf=True):
+        headers = {}
+        if auth:
+            headers['Authorization'] = 'Basic ' + base64.b64encode(b'admin:test-password').decode()
+        if body is not None:
+            headers['Content-Type'] = 'application/json'
+            if csrf:
+                headers['X-WG-Panel'] = '1'
+        request = Request(self.base + path, data=json.dumps(body).encode() if body is not None else None, headers=headers)
+        try:
+            return urlopen(request, timeout=3)
+        except HTTPError as e:
+            return e
+
+    def test_auth_and_csrf(self):
+        self.assertEqual(self.request('/api/status', auth=False).status, 401)
+        self.assertEqual(self.request('/api/clients', {'name': 'laptop'}, csrf=False).status, 403)
+        self.assertEqual(len(panel.load()['clients']), 1)
+
+    def test_status_hides_secrets_and_download_is_private(self):
+        response = self.request('/api/status')
+        text = response.read().decode()
+        self.assertNotIn('client-private', text)
+        self.assertNotIn('shared', text)
+        self.assertEqual(json.loads(text)['clients'][0]['received'], 123)
+        self.assertEqual(self.request('/api/clients/0123456789abcdef/config', auth=False).status, 401)
+        response = self.request('/api/clients/0123456789abcdef/config')
+        self.assertIn('no-store', response.headers['Cache-Control'])
+        self.assertIn('client-private', response.read().decode())
+
+    def test_create_skips_unmanaged_peer_and_revoke_syncs(self):
+        self.assertEqual(self.request('/api/clients', {'name': 'laptop'}).status, 200)
+        state = panel.load()
+        created = state['clients'][-1]
+        self.assertEqual(created['address'], '10.203.240.4')
+        self.assertIn('PublicKey = unmanaged', panel.CONFIG.read_text())
+        self.assertEqual(self.request('/api/clients', {'name': 'laptop'}).status, 400)
+        self.assertEqual(self.request('/api/revoke', {'id': created['id']}).status, 200)
+        self.assertNotIn('new-public', panel.CONFIG.read_text())
+        self.assertTrue(any(c[:2] == ('wg', 'syncconf') for c in self.commands))
+
+    def test_settings_validate_and_preserve_keys(self):
+        body = dict(host='new.example.com', port=443, dns='9.9.9.9, 1.1.1.1', mtu=1360)
+        before = panel.CONFIG.read_text()
+        self.assertEqual(self.request('/api/settings', body).status, 200)
+        self.assertEqual(panel.CONFIG.read_text(), before)
+        self.assertEqual(panel.load()['clients'][0]['private'], 'client-private')
+        config = self.request('/api/clients/0123456789abcdef/config').read().decode()
+        self.assertIn('Endpoint = new.example.com:443', config)
+        body['host'] = 'x\nPrivateKey = injected'
+        self.assertEqual(self.request('/api/settings', body).status, 400)
+
+    def test_failed_sync_restores_state_and_server(self):
+        old_config = panel.CONFIG.read_text()
+        old_state = (panel.ROOT / 'state.json').read_text()
+        state = panel.load()
+        state['clients'] = []
+        with patch.object(panel, 'sync', side_effect=[RuntimeError('sync failed'), None]):
+            with self.assertRaises(RuntimeError):
+                panel.save(state)
+        self.assertEqual(panel.CONFIG.read_text(), old_config)
+        self.assertEqual((panel.ROOT / 'state.json').read_text(), old_state)
+
+    def test_update_runs_separate_systemd_job(self):
+        self.assertEqual(self.request('/api/update', {}).status, 200)
+        self.assertTrue(any(c[0] == 'systemd-run' and c[-1] == '/usr/local/sbin/wg-auto-update' for c in self.commands))
+
+    def test_upgrade_imports_original_client_without_losing_other_peers(self):
+        (panel.ROOT / 'state.json').unlink()
+        original = panel.ROOT / 'original-client.conf'
+        original.write_text('[Interface]\nPrivateKey = original-private\nAddress = 10.203.240.2/32\nDNS = 1.1.1.1\n[Peer]\nEndpoint = vpn.example.com:51820\n')
+        text = panel.CONFIG.read_text().replace('client-public', 'new-public')
+        panel.CONFIG.write_text(text)
+        with patch.object(panel, 'ORIGINAL_CLIENT', original):
+            panel.initialize()
+        state = panel.load()
+        self.assertEqual(state['clients'][0]['private'], 'original-private')
+        self.assertEqual(state['clients'][0]['name'], 'original-client')
+        self.assertEqual(len(state['unmanaged']), 1)
+        self.assertEqual(panel.CONFIG.read_text(), text)
+        # Later updates must not re-import a revoked original client.
+        state['clients'] = []
+        panel.atomic(panel.ROOT / 'state.json', json.dumps(state))
+        panel.initialize()
+        self.assertEqual(panel.load()['clients'], [])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -15,11 +15,22 @@ iface=wgauto0
 config=/etc/wireguard/$iface.conf
 client=/root/wireguard-client.conf
 marker=/etc/wireguard/.wg-auto-managed
+install_panel() {
+  local bootstrap
+  bootstrap=$(mktemp /tmp/wg-auto-panel.XXXXXXXX.sh)
+  if ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 https://raw.githubusercontent.com/asalabanowwaw/wireguard-host-probe/main/update.sh -o "$bootstrap"; then
+    rm -f "$bootstrap"
+    die 'VPN is preserved, but the panel download failed. Rerun this installer to retry.'
+  fi
+  bash "$bootstrap" --install
+  rm -f "$bootstrap"
+}
 if [[ -e $config ]]; then
   [[ -e $marker && -s $client ]] || die "Existing $config found; refusing to overwrite it."
   systemctl enable --now "wg-quick@$iface"
   printf 'Already installed. Client configuration: %s\n' "$client"
   command -v qrencode >/dev/null && qrencode -t ansiutf8 < "$client"
+  install_panel
   exit 0
 fi
 export DEBIAN_FRONTEND=noninteractive
@@ -123,3 +134,4 @@ printf '\nImport /root/wireguard-client.conf, or display it using: sudo cat /roo
 printf 'If your VPS provider has a cloud firewall, allow inbound UDP %s there.\n' "$port"
 printf 'IPv4 internet is routed through the VPS; IPv6 is captured but not provided.\n'
 printf 'Server startup verified; connect your client to verify handshake and internet access.\n'
+install_panel
