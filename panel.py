@@ -234,7 +234,7 @@ def xray_config(state, client):
     tuning = effective_tuning(state, client)
     dns = [x.strip() for x in tuning['dns'].split(',')]
     return dict(log=dict(loglevel='warning'), dns=dict(servers=dns, queryStrategy='UseIPv4'),
-        inbounds=[dict(tag='socks', listen='127.0.0.1', port=10808, protocol='socks', settings=dict(auth='noauth', udp=True)),
+        inbounds=[dict(tag='mixed', listen='127.0.0.1', port=10808, protocol='mixed', settings=dict(auth='noauth', udp=True)),
                   dict(tag='http', listen='127.0.0.1', port=10809, protocol='http', settings={})],
         outbounds=[dict(tag='proxy', protocol='wireguard', settings=dict(secretKey=client['private'],
             address=[client['address'] + '/32'], mtu=tuning['mtu'], noKernelTun=True,
@@ -242,6 +242,42 @@ def xray_config(state, client):
                 publicKey=state['serverPublic'], preSharedKey=client['psk'], keepAlive=tuning['keepalive'], allowedIPs=['0.0.0.0/0'])])),
             dict(tag='block', protocol='blackhole', settings={})],
         routing=dict(domainStrategy='AsIs', rules=[dict(type='field', ip=['::/0'], outboundTag='block')]))
+
+
+def diagnostics(state):
+    checks = []
+    def check(label, command, expected=None):
+        try:
+            output = run(*command)
+            ok = output == expected if expected is not None else True
+            checks.append(dict(label=label, ok=ok, detail=output[:500] or ('Present' if ok else 'Missing')))
+            return output
+        except Exception:
+            checks.append(dict(label=label, ok=False, detail='Command failed or rule was not found'))
+            return None
+    check('WireGuard service', ('systemctl', 'is-active', 'wg-quick@' + IFACE), 'active')
+    check('IPv4 forwarding', ('sysctl', '-n', 'net.ipv4.ip_forward'), '1')
+    wan = None
+    try:
+        routes = json.loads(run('ip', '-j', '-4', 'route', 'get', '1.1.1.1'))
+        wan = routes[0]['dev']
+        checks.append(dict(label='Outbound route', ok=True, detail='Interface: ' + wan))
+    except Exception:
+        checks.append(dict(label='Outbound route', ok=False, detail='Could not determine the outbound interface'))
+    port = fields(state['header'])['ListenPort']
+    check('WireGuard host firewall rule', ('iptables', '-C', 'INPUT', '-p', 'udp', '--dport', port, '-j', 'ACCEPT'))
+    if wan:
+        subnet = state['network']
+        check('Outbound VPN forwarding rule', ('iptables', '-C', 'FORWARD', '-i', IFACE, '-o', wan, '-s', subnet, '-j', 'ACCEPT'))
+        check('Return traffic forwarding rule', ('iptables', '-C', 'FORWARD', '-i', wan, '-o', IFACE, '-d', subnet, '-m', 'conntrack', '--ctstate', 'RELATED,ESTABLISHED', '-j', 'ACCEPT'))
+        check('VPN internet NAT rule', ('iptables', '-t', 'nat', '-C', 'POSTROUTING', '-s', subnet, '-o', wan, '-j', 'MASQUERADE'))
+    public_ip = check('VPS internet HTTPS access', ('curl', '-4fsS', '--connect-timeout', '3', '--max-time', '5', 'https://api.ipify.org'))
+    if public_ip:
+        try:
+            ipaddress.IPv4Address(public_ip)
+        except ValueError:
+            checks[-1].update(ok=False, detail='Unexpected response from IP check')
+    return dict(checks=checks, note='These are read-only server checks. A handshake proves peer connectivity, not internet access. Cloud firewalls, ISP filtering, client routing and path MTU require client-side tests.')
 
 
 def make_server(host='0.0.0.0', port=8787):
@@ -367,6 +403,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/':
                 return self.send(200, Path(__file__).with_name('panel.html').read_bytes(), 'text/html; charset=utf-8')
             state = load()
+            if self.path == '/api/diagnostics':
+                return self.send(200, diagnostics(state))
             if self.path == '/api/status':
                 peers, error = {}, None
                 try:
@@ -383,10 +421,13 @@ class Handler(BaseHTTPRequestHandler):
                     listenPort=fields(state['header'])['ListenPort'], error=error,
                     version=Path(__file__).with_name('VERSION').read_text().strip(),
                     unmanaged=len(state['unmanaged']), clients=[dict(id=c['id'], name=c['name'], address=c['address'], tuning=effective_tuning(state, c), dnsOverride=c.get('tuning', {}).get('dns', ''), **peers.get(c['public'], {})) for c in state['clients']]))
-            match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/(config|uri|xray)', self.path)
+            match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/(config|uri|xray|compatible)', self.path)
             if match:
                 c = next((c for c in state['clients'] if c['id'] == match[1]), None)
                 if c:
+                    if match[2] == 'compatible':
+                        c = dict(c, tuning=dict(profile='custom', mtu=1280, keepalive=25, dns='1.1.1.1, 1.0.0.1'))
+                        return self.send(200, json.dumps(xray_config(state, c), indent=2), 'application/json', c['name'] + '-compatible-xray.json')
                     if match[2] == 'uri':
                         return self.send(200, share_uri(state, c) + '\n', 'text/plain', c['name'] + '-v2ray.txt')
                     if match[2] == 'xray':

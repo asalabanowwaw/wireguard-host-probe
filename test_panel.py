@@ -234,6 +234,35 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(settings['peers'][0]['preSharedKey'], c['psk'])
         self.assertEqual(config['inbounds'][0]['listen'], '127.0.0.1')
         self.assertEqual(config['routing']['rules'][0]['outboundTag'], 'block')
+        self.assertEqual(config['inbounds'][0]['protocol'], 'mixed')
+
+    def test_compatibility_export_does_not_modify_saved_client(self):
+        before = (panel.ROOT / 'state.json').read_text()
+        self.assertEqual(self.request('/api/clients/0123456789abcdef/compatible', auth=False).status, 401)
+        exported = json.load(self.request('/api/clients/0123456789abcdef/compatible'))
+        self.assertEqual(exported['outbounds'][0]['settings']['mtu'], 1280)
+        self.assertEqual(exported['outbounds'][0]['settings']['remoteDNS'], ['1.1.1.1', '1.0.0.1'])
+        self.assertEqual(exported['inbounds'][0]['protocol'], 'mixed')
+        self.assertEqual((panel.ROOT / 'state.json').read_text(), before)
+
+    def test_diagnostics_are_authenticated_and_read_only(self):
+        self.assertEqual(self.request('/api/diagnostics', auth=False).status, 401)
+        def checked(*args, data=None):
+            if args == ('ip', '-j', '-4', 'route', 'get', '1.1.1.1'):
+                return '[{"dev":"eth0"}]'
+            if args[0] == 'systemctl':
+                return 'active'
+            if args[0] == 'sysctl':
+                return '1'
+            if args[0] == 'curl':
+                return '192.0.2.1'
+            self.assertIn('-C', args)
+            self.assertNotIn('-A', args)
+            self.assertNotIn('-I', args)
+            return ''
+        with patch.object(panel, 'run', side_effect=checked):
+            response = json.load(self.request('/api/diagnostics'))
+        self.assertTrue(all(c['ok'] for c in response['checks']))
 
     def test_upgrade_imports_original_client_without_losing_other_peers(self):
         (panel.ROOT / 'state.json').unlink()

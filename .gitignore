@@ -3,3 +3,5 @@ node_modules/
 *.conf
 *.key
 __pycache__/
+local-tools/
+*.log

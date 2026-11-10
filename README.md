@@ -23,12 +23,42 @@ Use **Saved presets** to create a named connection preset (MTU and keepalive) or
 Each client has **Copy v2ray link**, **v2ray link file**, and **Xray JSON** actions in addition to the native `.conf` download.
 
 - For a recent v2rayN or v2rayNG, copy the `wireguard://` link and use the app's import-from-clipboard action. If using the text download, copy its contents rather than the authenticated panel download URL.
-- For full configuration import, download **Xray JSON**, import it as a custom configuration, and select the Xray core. This is a complete JSON config, not an outbound fragment. It uses loopback SOCKS port 10808 with UDP enabled and HTTP port 10809; change these local ports if another program is using them. Enable the client's VPN/TUN or system proxy as appropriate to route application traffic.
+- For full configuration import, download **Xray JSON**, import it as a custom configuration, and select a current Xray core. This is a complete JSON config, not an outbound fragment. It accepts HTTP and SOCKS with UDP on mixed port 10808, plus HTTP on 10809, all on the client's loopback interface. This matches current v2rayN's mixed listener convention; change these local ports if another program is using them. Enable the client's VPN/TUN or system proxy as appropriate to route application traffic.
 - Link exports carry the selected DNS, MTU, client address, keys and server endpoint. The current client URI parsers do not expose persistent keepalive, so use JSON or native WireGuard if retaining this setting is required. Full JSON retains `keepAlive` and uses Xray's userspace WireGuard outbound. App-side settings may affect routing or imported fields.
 - These are alternative ways to use the same WireGuard server, not VLESS/VMess conversions or obfuscation. IPv6 internet remains unavailable; JSON explicitly blocks IPv6 destinations. Create a separate client for each device, and do not run multiple apps simultaneously with the same client keys.
 - Links and JSON contain private client credentials. They require panel login, are served with `Cache-Control: no-store`, and should not be published.
 
 Format references: [v2rayN WireGuard parser](https://github.com/2dust/v2rayN/blob/master/v2rayN/ServiceLib/Handler/Fmt/WireguardFmt.cs), [v2rayNG WireGuard parser](https://github.com/2dust/v2rayNG/blob/master/V2rayNG/app/src/main/java/com/v2ray/ang/fmt/WireguardFmt.kt), [Xray WireGuard outbound](https://xtls.github.io/en/config/outbounds/wireguard.html). Compatibility is based on these current formats; mobile/desktop GUI imports and end-to-end connectivity still need testing on the user's app versions.
+
+### Connection diagnostics and compatibility export
+
+Select **Check VPS networking** to check the service, IPv4 forwarding, outbound route, this installer's host firewall rules, return traffic rules, NAT and the VPS's HTTPS internet access. Checks are read-only. Missing expected rules are flagged, but other rules may also affect traffic; a successful rule check does not prove the entire firewall accepts packets. Provider firewalls and client routes cannot be verified by these server checks.
+
+**v2rayN compatibility** exports a conservative custom Xray configuration using MTU 1280, keepalive 25 and Cloudflare DNS, without changing saved client settings. The first inbound is mixed HTTP/SOCKS on 10808, matching current v2rayN defaults. Older custom exports used SOCKS-only on this port; a client sending HTTP there could fail even when WireGuard handshakes succeeded. Use a recent Xray core with mixed inbound support.
+
+### PC application: measured connection trials
+
+The VPS panel remains hosted on your public VPS. The companion PC tuner is a separate localhost application at **http://127.0.0.1:8788**, using Python 3.10+ and the official Xray core. No Python packages are required. On Windows x64, install its core once:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-local.ps1
+```
+
+The script downloads the official [XTLS/Xray-core](https://github.com/XTLS/Xray-core) release into `%LOCALAPPDATA%\WireGuardNetworkTuner\tools` and verifies the release asset's SHA256 digest when GitHub supplies one. Binaries are not committed or bundled into this repository. Then double-click **Start local tuner.cmd**, run `python local_app.py`, or `npm run local`. Stop the console process to stop the app. The source and launcher can be copied to any folder; the native VPN service does not need to run on your PC.
+
+Import a one-peer `.conf`, `wireguard://` link or our Xray JSON export. Private keys remain in memory except for short-lived, user-private temporary config files required by Xray; those files are removed after each trial. Reports and exported presets contain no keys. Exported client configs/links do contain keys. The UI binds only to loopback, validates the Host header and requires a per-process API token to prevent other websites from controlling scans.
+
+**Check current connection** tests direct HTTPS and the existing local HTTP proxy on port 10809. Direct requests bypass the system HTTP proxy, but still follow any active VPN/TUN route. A failed proxy test can also mean a different local port is configured; it does not automatically prove the VPN server is broken.
+
+For **full trials**, stop other apps using the imported client or create a separate test client first. The app starts isolated Xray processes with ephemeral local HTTP ports. It tests nine combinations of MTU 1280/1360/1420 and DNS 1.1.1.1/8.8.8.8/9.9.9.9. Each trial makes two HTTPS IP checks through WireGuard and, when connected, a 512 KiB sample download using Cloudflare's [documented speed-test endpoint](https://github.com/cloudflare/speedtest). At most roughly 5 MB of download payload is requested, excluding protocol overhead. It does not change Windows routes, firewall settings, system proxy settings or installed WireGuard tunnels.
+
+Only trials with both successful HTTPS checks and a successful download can be recommended. Results rank the small observed download samples, not the theoretical maximum line speed. HTTP timings include tunnel setup, DNS, TCP and TLS, so they are not raw ping latency or isolated DNS timings. Keepalive remains fixed at 25 seconds and is not benchmarked. Repeat trials to account for noise; if all fail, the app also tries an HTTPS IP address without DNS and reports handshake initiation/reply counts from temporary core logs. Only counts are exposed, not raw debug logs. ISP blocking, keys, endpoint reachability and server forwarding must be fixed before tuning can help. Credential-free reports are saved in `%LOCALAPPDATA%\WireGuardNetworkTuner\last-report.json`. They are restored when the app starts with the same `--config` endpoint/address summary; reimporting a client clears old recommendations.
+
+Export a tuned `.conf`, v2ray link, Xray JSON, or a credential-free measured preset file. In the VPS panel use **Import measured preset**, then explicitly apply the saved connection and DNS presets to a client and re-import its config.
+
+Research alternatives: [Wire-Seek](https://github.com/yeya/wire-seek) provides ICMP-based path MTU discovery, and [dnspyre](https://github.com/Tantalor93/dnspyre) benchmarks DNS resolvers. This app uses official Xray for actual tunnel trials rather than claiming ICMP path estimates or direct DNS timing alone establish the best VPN settings. No source code from those two tools is bundled.
+
+Tests: `python -m unittest -v test_panel.py test_local_app.py`. The current JSON export is also checked with official Xray's `run -test` validator.
 
 ### Per-client network settings
 
