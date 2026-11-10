@@ -6,6 +6,7 @@ import os
 import shutil
 import ssl
 import subprocess
+import http.client
 import threading
 import unittest
 from unittest.mock import patch
@@ -158,6 +159,14 @@ class PanelTests(unittest.TestCase):
         worker = threading.Thread(target=https.serve_forever, daemon=True)
         worker.start()
         try:
+            plain = http.client.HTTPConnection('127.0.0.1', https.server_port, timeout=5)
+            plain.request('GET', '/')
+            redirected = plain.getresponse()
+            self.assertEqual(redirected.status, 308)
+            self.assertEqual(redirected.getheader('Location'), 'https://vpn.example.com:' + str(https.server_port) + '/')
+            self.assertIsNone(redirected.getheader('WWW-Authenticate'))
+            redirected.read()
+            plain.close()
             context = ssl.create_default_context(cafile=str(panel.ROOT / 'tls.crt'))
             url = 'https://127.0.0.1:' + str(https.server_port) + '/api/status'
             request = Request(url, headers={'Authorization': 'Basic ' + base64.b64encode(b'admin:test-password').decode()})

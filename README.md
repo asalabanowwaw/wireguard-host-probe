@@ -29,6 +29,14 @@ The installer generates a self-signed TLS certificate automatically, so the brow
 
 If you installed the earlier tunnel-only panel, rerun the curl installation command below once to migrate to public HTTPS. Use that command for this migration rather than the old updater, which expects an HTTP-only health check. Your password, keys and clients are retained. Later upgrades work through the update button or `sudo wg-auto-update`.
 
+If logs show `ssl.SSLError: [SSL: HTTP_REQUEST]` from `127.0.0.1` during an update, the old updater is checking the new HTTPS server using HTTP. Recover by downloading the new updater directly, bypassing the installed older copy:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/asalabanowwaw/wireguard-host-probe/main/update.sh -o /tmp/wg-auto-recover.sh && sudo bash /tmp/wg-auto-recover.sh --install
+```
+
+This re-applies the public HTTPS service, host firewall rule and HTTPS health check without replacing VPN keys or client records. Re-running the latest updater repairs service setup even when its application version is already current. Plain HTTP browser requests now redirect to HTTPS and do not display a login prompt until the encrypted connection is established.
+
 Changing the advertised endpoint does not change the server's actual listening port or create another server. For example, advertising port 443 requires a working UDP port mapping from public 443 to the server's current listening port. Existing imported configs do not update themselves: download and import a replacement after changing settings. Revocation disconnects the peer; the old `/root/wireguard-client.conf` file may still exist but no longer grants access once its peer is revoked.
 
 ### Update without redeploying

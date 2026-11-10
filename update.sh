@@ -25,10 +25,8 @@ sha=$(curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 "$repo" | python3 
 [[ $sha =~ ^[a-f0-9]{40}$ ]] || { echo 'Invalid release commit.'; exit 1; }
 old=$(readlink -f "$base/current" || true)
 release="$base/releases/$sha"
-if [[ $old == "$release" && ${1:-} != --install ]]; then
-  echo "Already up to date: $sha"
-  exit 0
-fi
+# Reapply service/firewall setup even at the current release, so rerunning this
+# command can repair a stopped service or an interrupted HTTP-to-HTTPS migration.
 curl -fsSL --retry 2 --connect-timeout 10 --max-time 60 "https://codeload.github.com/asalabanowwaw/wireguard-host-probe/tar.gz/$sha" -o "$stage/source.tgz"
 tar -xzf "$stage/source.tgz" -C "$stage" --strip-components=1 \
   "wireguard-host-probe-$sha/panel.py" \

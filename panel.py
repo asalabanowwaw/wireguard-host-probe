@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import secrets
 import ssl
+import socket
 import subprocess
 import tempfile
 import time
@@ -161,11 +162,26 @@ class PanelServer(ThreadingHTTPServer):
     def get_request(self):
         sock, address = super().get_request()
         sock.settimeout(10)
+        return sock, address
+
+    def finish_request(self, sock, address):
         try:
-            return self.tls_context.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), address
-        except Exception:
-            sock.close()
-            raise
+            first = sock.recv(1, socket.MSG_PEEK)
+            if not first:
+                return
+            if first != b'\x16':
+                # Never authenticate or serve private data over plaintext HTTP.
+                host = load()['host']
+                location = f'https://{host}:{self.server_port}/'
+                sock.sendall(('HTTP/1.1 308 Permanent Redirect\r\nLocation: ' + location +
+                              '\r\nContent-Length: 0\r\nConnection: close\r\n\r\n').encode('ascii'))
+                return
+            with self.tls_context.wrap_socket(sock, server_side=True) as secured:
+                super().finish_request(secured, address)
+        except (ssl.SSLError, TimeoutError, ConnectionError):
+            # Browser certificate rejection, scanners and interrupted handshakes
+            # are connection failures, not application failures.
+            return
 
 
 def settings(state, body):
