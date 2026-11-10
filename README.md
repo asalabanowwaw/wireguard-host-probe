@@ -1,5 +1,24 @@
 # WireGuard automatic VPS setup and minimal panel
 
+## Diana dashboard
+
+The panel now has an original anime night-city design with night/dawn themes, responsive navigation, a live overview and device management. Existing native WireGuard installs, clients, keys, DNS/connection presets and authentication are retained. Upgrade with `sudo wg-auto-update`, then refresh the browser.
+
+New tools include:
+
+- Client pause/resume without deleting keys, rename, search/filter/sort, and bulk pause/resume for up to 64 selected clients.
+- Authenticated WireGuard QR SVG display/download, generated locally by the `qrencode` utility installed with the VPN setup. QR codes contain the private client configuration and are never sent to an external QR service.
+- Sampled server receive/send rates and a rolling traffic chart. Rates start at zero until a second sample is available. Counters are current WireGuard counters, not lifetime totals. Counter resets produce zero rather than negative rates. History is in-memory, limited to 60 samples and collected on status requests.
+- Recent-handshake badges and explanatory hints for paused clients, no/stale handshakes, low-MTU IPv4-only exports, and repeated peer endpoint changes. These are observations and troubleshooting hints, not proof of internet access or network optimization. A recent handshake is labelled "Recently seen", not "Online".
+- Secret-free recent client activity, stored under `/etc/wireguard/wg-auto-panel/activity.json` with the latest 80 entries retained.
+- Shecan DNS as a built-in choice alongside the existing resolvers; all custom presets and local tuner import/export remain available.
+
+The user selected a compatible native-backend upgrade rather than a Docker migration. Features are inspired by [wg-easy](https://github.com/wg-easy/wg-easy); no upstream source or artwork is copied. See [UPSTREAM.md](UPSTREAM.md).
+
+UI source lives in `web/panel-shell.html`, `web/panel.css`, and `web/panel.js`. Run `python build_panel.py` after changing those sources or `assets/anime-hero.webp`; it builds the self-contained `panel.html` used by the existing updater. Artwork and the final generation prompt are in `assets/`. No npm dependencies, public CDNs or external font requests are required on the VPS.
+
+Backend checks: `python -m unittest -v test_panel.py test_local_app.py`. Browser workflow checks use development-only Playwright (`node test_panel_ui.cjs`, optionally set `PLAYWRIGHT_MODULE` and `BROWSER_EXE`). The browser test intercepts all API requests with explicit fake fixtures and never accesses a real VPN. It exercises desktop/mobile layout and client management workflows; fixture traffic is not production measurement data.
+
 ## Panel and updates
 
 The installer now includes a minimal Python panel for the native WireGuard VPS installation. If you used the previous installer, run the same installation command again: it keeps your existing server keys and imports the original client. The Node.js hosting probe remains separate and unchanged.

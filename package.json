@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "description": "Node.js hosting compatibility probe for WireGuard",
-  "scripts": { "start": "node index.js", "check": "node index.js --check", "local": "python local_app.py" },
+  "scripts": { "start": "node index.js", "check": "node index.js --check", "local": "python local_app.py", "build:panel": "python build_panel.py" },
   "engines": { "node": ">=18" }
 }

@@ -21,7 +21,7 @@ class PanelTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
-        self.paths = patch.multiple(panel, ROOT=root, CONFIG=root / 'server.conf')
+        self.paths = patch.multiple(panel, ROOT=root, CONFIG=root / 'server.conf', PEER_SAMPLES={}, TRAFFIC_HISTORY=[])
         self.paths.start()
         self.state = dict(header='[Interface]\nPrivateKey = server-private\nAddress = 10.203.240.1/24\nListenPort = 51820',
                           unmanaged=['PublicKey = unmanaged\nAllowedIPs = 10.203.240.3/32'],
@@ -244,6 +244,76 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(exported['outbounds'][0]['settings']['remoteDNS'], ['1.1.1.1', '1.0.0.1'])
         self.assertEqual(exported['inbounds'][0]['protocol'], 'mixed')
         self.assertEqual((panel.ROOT / 'state.json').read_text(), before)
+
+    def test_pause_resume_preserves_keys_and_reserves_address(self):
+        original = panel.load()['clients'][0]
+        path = '/api/clients/0123456789abcdef/details'
+        self.assertEqual(self.request(path, {'enabled': False}).status, 200)
+        state = panel.load()
+        self.assertEqual(state['clients'][0]['private'], original['private'])
+        self.assertNotIn('PublicKey = client-public', panel.CONFIG.read_text())
+        self.assertIn('PublicKey = unmanaged', panel.CONFIG.read_text())
+        status = json.load(self.request('/api/status'))
+        self.assertEqual(status['clients'][0]['status'], 'paused')
+        self.assertEqual(self.request('/api/clients', {'name': 'new-device'}).status, 200)
+        self.assertEqual(panel.load()['clients'][1]['address'], '10.203.240.4')
+        self.assertEqual(self.request(path, {'enabled': True}).status, 200)
+        self.assertIn('PublicKey = client-public', panel.CONFIG.read_text())
+        self.assertEqual(panel.load()['clients'][0]['psk'], original['psk'])
+
+    def test_bulk_and_rename_validation(self):
+        self.assertEqual(self.request('/api/clients/bulk', dict(ids=['0123456789abcdef'], action='disable'), auth=False).status, 401)
+        self.assertEqual(self.request('/api/clients/bulk', dict(ids=['missing'], action='disable')).status, 400)
+        self.assertEqual(self.request('/api/clients/bulk', dict(ids=['0123456789abcdef'], action='disable')).status, 200)
+        self.assertFalse(panel.load()['clients'][0]['enabled'])
+        self.assertEqual(self.request('/api/clients/0123456789abcdef/details', dict(enabled='false')).status, 400)
+        self.assertEqual(self.request('/api/clients/0123456789abcdef/details', dict(name='new-name')).status, 200)
+        self.assertEqual(panel.load()['clients'][0]['name'], 'new-name')
+        self.assertEqual(self.request('/api/clients/0123456789abcdef/details', dict(name='bad\nname')).status, 400)
+        self.assertEqual(self.request('/api/clients/bulk', dict(ids=['0123456789abcdef'], action='enable')).status, 200)
+
+    def test_qr_requires_auth_and_passes_private_config_only_on_stdin(self):
+        path = '/api/clients/0123456789abcdef/qr.svg'
+        self.assertEqual(self.request(path, auth=False).status, 401)
+        def qr(*args, data=None):
+            self.assertEqual(args, ('qrencode', '-t', 'SVG', '-m', '2'))
+            self.assertIn('PrivateKey = client-private', data)
+            return '<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        with patch.object(panel, 'run', side_effect=qr):
+            response = self.request(path)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers['Content-Type'], 'image/svg+xml')
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        with patch.object(panel, 'run', side_effect=FileNotFoundError):
+            self.assertEqual(self.request(path).status, 503)
+
+    def test_activity_has_no_client_keys(self):
+        self.assertEqual(self.request('/api/activity', auth=False).status, 401)
+        self.assertEqual(self.request('/api/clients/0123456789abcdef/details', dict(name='rename-test')).status, 200)
+        text = self.request('/api/activity').read().decode()
+        self.assertIn('rename-test', text)
+        self.assertNotIn('client-private', text)
+        self.assertNotIn('shared', text)
+        self.assertNotIn('server-private', text)
+
+    def test_traffic_sampling_and_counter_reset(self):
+        state = panel.load()
+        first = {'client-public': dict(handshake=99, received=100, sent=200, endpoint='192.0.2.1:10')}
+        sample = panel.client_metrics(state, first, now=100)
+        self.assertEqual(sample['traffic']['received'], 0)
+        self.assertTrue(sample['clients'][0]['recent'])
+        second = {'client-public': dict(handshake=99, received=600, sent=1200, endpoint='192.0.2.2:20')}
+        sample = panel.client_metrics(state, second, now=105)
+        self.assertEqual(sample['traffic']['received'], 100)
+        self.assertEqual(sample['traffic']['sent'], 200)
+        self.assertEqual(sample['clients'][0]['endpointChanges'], 1)
+        repeated = panel.client_metrics(state, second, now=105.1)
+        self.assertEqual(repeated['traffic']['received'], 100)
+        restarted = {'client-public': dict(handshake=99, received=1, sent=2, endpoint='192.0.2.2:20')}
+        sample = panel.client_metrics(state, restarted, now=110)
+        self.assertEqual(sample['traffic']['received'], 0)
+        self.assertEqual(sample['traffic']['sent'], 0)
+        self.assertEqual(len(sample['traffic']['history']), 3)
 
     def test_low_mtu_exports_ipv4_only_without_changing_peer_keys(self):
         path = '/api/clients/0123456789abcdef/'

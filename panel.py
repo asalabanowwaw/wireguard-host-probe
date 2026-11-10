@@ -25,6 +25,9 @@ IFACE = 'wgauto0'
 MUTATION_LOCK = threading.Lock()
 AUTH_LOCK = threading.Lock()
 AUTH_FAILURES = {}
+METRICS_LOCK = threading.Lock()
+PEER_SAMPLES = {}
+TRAFFIC_HISTORY = []
 PROFILES = {
     'small': dict(label='Small packets — IPv4 only', mtu=1200, keepalive=25),
     'compatible': dict(label='Compatibility — smaller packets', mtu=1280, keepalive=25),
@@ -33,6 +36,7 @@ PROFILES = {
     'idle': dict(label='Less idle traffic — keepalive disabled', mtu=1280, keepalive=0),
 }
 DNS_PRESETS = {
+    'shecan': dict(label='Shecan', dns='178.22.122.100, 185.51.200.2'),
     'cloudflare': dict(label='Cloudflare', dns='1.1.1.1, 1.0.0.1'),
     'google': dict(label='Google', dns='8.8.8.8, 8.8.4.4'),
     'quad9': dict(label='Quad9', dns='9.9.9.9, 149.112.112.112'),
@@ -99,6 +103,8 @@ def initialize():
 def render_server(state):
     blocks = list(state['unmanaged'])
     for c in state['clients']:
+        if not c.get('enabled', True):
+            continue
         blocks.append(f"PublicKey = {c['public']}\nPresharedKey = {c['psk']}\nAllowedIPs = {c['address']}/32")
     return state['header'] + '\n\n' + ''.join('[Peer]\n' + b + '\n\n' for b in blocks)
 
@@ -284,6 +290,76 @@ def diagnostics(state):
     return dict(checks=checks, note='These are read-only server checks. A handshake proves peer connectivity, not internet access. Cloud firewalls, ISP filtering, client routing and path MTU require client-side tests.')
 
 
+def client_metrics(state, peers, now=None):
+    now = time.time() if now is None else now
+    clients, received_rate, sent_rate = [], 0.0, 0.0
+    with METRICS_LOCK:
+        for client in state['clients']:
+            peer = dict(peers.get(client['public'], {}))
+            enabled = client.get('enabled', True)
+            before = PEER_SAMPLES.get(client['id'])
+            rx, tx = peer.get('received', 0), peer.get('sent', 0)
+            down, up, changes = 0.0, 0.0, before.get('changes', 0) if before else 0
+            endpoint = peer.get('endpoint', '')
+            if before:
+                elapsed = now - before['time']
+                if 1 <= elapsed <= 120 and rx >= before['rx'] and tx >= before['tx']:
+                    down, up = (rx - before['rx']) / elapsed, (tx - before['tx']) / elapsed
+                elif 0 <= elapsed < 1:
+                    down, up = before.get('down', 0), before.get('up', 0)
+                if endpoint and before.get('endpoint') and endpoint != before['endpoint']:
+                    changes += 1
+            if not enabled:
+                down, up = 0.0, 0.0
+            sample_time, sample_rx, sample_tx = now, rx, tx
+            if before and 0 <= now - before['time'] < 1:
+                sample_time, sample_rx, sample_tx = before['time'], before['rx'], before['tx']
+            PEER_SAMPLES[client['id']] = dict(time=sample_time, rx=sample_rx, tx=sample_tx, endpoint=endpoint,
+                                             changes=changes, down=down, up=up)
+            handshake = peer.get('handshake', 0)
+            recent = bool(enabled and handshake and 0 <= now - handshake <= 180)
+            hints = []
+            if not enabled:
+                hints.append(dict(level='info', text='Paused. This peer is removed from WireGuard until resumed.'))
+            elif not handshake:
+                hints.append(dict(level='warning', text='No handshake recorded. Check endpoint, keys and UDP reachability.'))
+            elif now - handshake > 300:
+                hints.append(dict(level='info', text='No recent handshake. The device may be idle, offline or unable to reach the server.'))
+            tuning = effective_tuning(state, client)
+            if tuning['mtu'] < 1280:
+                hints.append(dict(level='warning', text='Native config is IPv4-only below MTU 1280. IPv6 can bypass the VPN unless blocked on the device.'))
+            if changes >= 2:
+                hints.append(dict(level='info', text='Peer endpoint changed repeatedly. Check network switching or two apps sharing the same client keys.'))
+            received_rate += down
+            sent_rate += up
+            clients.append(dict(id=client['id'], name=client['name'], address=client['address'], enabled=enabled,
+                recent=recent, status='paused' if not enabled else ('recent' if recent else ('idle' if handshake else 'new')),
+                tuning=tuning, dnsOverride=client.get('tuning', {}).get('dns', ''), receivedRate=round(down),
+                sentRate=round(up), endpointChanges=changes, hints=hints, **peer))
+        known = {c['id'] for c in state['clients']}
+        for key in list(PEER_SAMPLES):
+            if key not in known:
+                del PEER_SAMPLES[key]
+        point = dict(time=int(now), received=round(received_rate), sent=round(sent_rate))
+        if not TRAFFIC_HISTORY or now - TRAFFIC_HISTORY[-1]['time'] >= 2:
+            TRAFFIC_HISTORY.append(point)
+            del TRAFFIC_HISTORY[:-60]
+        return dict(clients=clients, traffic=dict(**point, history=list(TRAFFIC_HISTORY)),
+                    summary=dict(total=len(clients), enabled=sum(c['enabled'] for c in clients),
+                    recent=sum(c['recent'] for c in clients), received=sum(c.get('received', 0) for c in clients),
+                    sent=sum(c.get('sent', 0) for c in clients)))
+
+
+def audit(event):
+    path = ROOT / 'activity.json'
+    try:
+        entries = json.loads(path.read_text()) if path.exists() else []
+        entries.append(dict(time=int(time.time()), text=event))
+        atomic(path, json.dumps(entries[-80:]))
+    except (OSError, ValueError):
+        pass
+
+
 def make_server(host='0.0.0.0', port=8787):
     cert, key = ROOT / 'tls.crt', ROOT / 'tls.key'
     if not cert.exists() or not key.exists():
@@ -367,7 +443,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
-        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'")
         if code == 401:
             self.send_header('WWW-Authenticate', 'Basic realm="WireGuard panel"')
         if filename:
@@ -407,6 +483,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/':
                 return self.send(200, Path(__file__).with_name('panel.html').read_bytes(), 'text/html; charset=utf-8')
             state = load()
+            if self.path == '/api/activity':
+                path = ROOT / 'activity.json'
+                return self.send(200, json.loads(path.read_text()) if path.exists() else [])
             if self.path == '/api/diagnostics':
                 return self.send(200, diagnostics(state))
             if self.path == '/api/status':
@@ -415,7 +494,7 @@ class Handler(BaseHTTPRequestHandler):
                     dump = run('wg', 'show', IFACE, 'dump').splitlines()
                     for line in dump[1:]:
                         p = line.split('\t')
-                        peers[p[0]] = dict(handshake=int(p[4]), received=int(p[5]), sent=int(p[6]))
+                        peers[p[0]] = dict(endpoint='' if p[2] == '(none)' else p[2], handshake=int(p[4]), received=int(p[5]), sent=int(p[6]))
                 except Exception:
                     error = 'WireGuard is unavailable. Check sudo systemctl status wg-quick@wgauto0.'
                 return self.send(200, dict(host=state['host'], port=state['port'], dns=state['dns'], mtu=state['mtu'],
@@ -424,11 +503,17 @@ class Handler(BaseHTTPRequestHandler):
                     dnsPresets={**DNS_PRESETS, **state.get('dnsPresets', {})}, savedDnsPresets=state.get('dnsPresets', {}),
                     listenPort=fields(state['header'])['ListenPort'], error=error,
                     version=Path(__file__).with_name('VERSION').read_text().strip(),
-                    unmanaged=len(state['unmanaged']), clients=[dict(id=c['id'], name=c['name'], address=c['address'], tuning=effective_tuning(state, c), dnsOverride=c.get('tuning', {}).get('dns', ''), **peers.get(c['public'], {})) for c in state['clients']]))
-            match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/(config|uri|xray|compatible)', self.path)
+                    unmanaged=len(state['unmanaged']), **client_metrics(state, peers)))
+            match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/(config|uri|xray|compatible|qr\.svg)', self.path)
             if match:
                 c = next((c for c in state['clients'] if c['id'] == match[1]), None)
                 if c:
+                    if match[2] == 'qr.svg':
+                        try:
+                            svg = run('qrencode', '-t', 'SVG', '-m', '2', data=client_config(state, c))
+                        except FileNotFoundError:
+                            return self.send(503, {'error': 'Install qrencode on the VPS to enable QR exports.'})
+                        return self.send(200, svg, 'image/svg+xml')
                     if match[2] == 'compatible':
                         c = dict(c, tuning=dict(profile='custom', mtu=1280, keepalive=25, dns='1.1.1.1, 1.0.0.1'))
                         return self.send(200, json.dumps(xray_config(state, c), indent=2), 'application/json', c['name'] + '-compatible-xray.json')
@@ -461,14 +546,51 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= 4096:
                 raise ValueError('Invalid request length')
             body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError('JSON object required.')
             state = load()
+            details_match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/details', self.path)
             tuning_match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/tuning', self.path)
-            if tuning_match:
+            if details_match:
+                client = next((c for c in state['clients'] if c['id'] == details_match[1]), None)
+                if not client:
+                    raise ValueError('Client not found.')
+                if 'name' in body:
+                    name = str(body['name']).strip()
+                    if not re.fullmatch(r'[A-Za-z0-9_-]{1,40}', name):
+                        raise ValueError('Use 1–40 letters, numbers, underscores or hyphens.')
+                    if any(c['id'] != client['id'] and c['name'] == name for c in state['clients']):
+                        raise ValueError('Client name already exists.')
+                    client['name'] = name
+                if 'enabled' in body:
+                    if not isinstance(body['enabled'], bool):
+                        raise ValueError('Enabled must be true or false.')
+                    client['enabled'] = body['enabled']
+                    save(state)
+                else:
+                    atomic(ROOT / 'state.json', json.dumps(state))
+                audit('Updated client ' + client['name'])
+            elif self.path == '/api/clients/bulk':
+                ids = body.get('ids')
+                action = body.get('action')
+                if not isinstance(ids, list) or not 1 <= len(ids) <= 64 or action not in ('enable', 'disable'):
+                    raise ValueError('Select 1–64 clients and choose enable or disable.')
+                if any(not isinstance(item, str) for item in ids):
+                    raise ValueError('Invalid client selection.')
+                selected = [c for c in state['clients'] if c['id'] in ids]
+                if {c['id'] for c in selected} != set(ids):
+                    raise ValueError('A selected client no longer exists.')
+                for client in selected:
+                    client['enabled'] = action == 'enable'
+                save(state)
+                audit(('Resumed ' if action == 'enable' else 'Paused ') + str(len(selected)) + ' client(s)')
+            elif tuning_match:
                 client = next((c for c in state['clients'] if c['id'] == tuning_match[1]), None)
                 if not client:
                     raise ValueError('Client not found.')
                 set_tuning(client, body, state)
                 atomic(ROOT / 'state.json', json.dumps(state))
+                audit('Updated network settings for ' + client['name'])
             elif self.path == '/api/presets':
                 manage_preset(state, body)
                 atomic(ROOT / 'state.json', json.dumps(state))
@@ -496,12 +618,14 @@ class Handler(BaseHTTPRequestHandler):
                 state['clients'].append(dict(id=secrets.token_hex(8), name=name, private=private,
                     public=run('wg', 'pubkey', data=private + '\n'), psk=run('wg', 'genpsk'), address=address))
                 save(state)
+                audit('Created client ' + name)
             elif self.path == '/api/revoke':
                 target = body.get('id')
                 if not any(c['id'] == target for c in state['clients']):
                     raise ValueError('Client not found.')
                 state['clients'] = [c for c in state['clients'] if c['id'] != target]
                 save(state)
+                audit('Revoked a client')
             elif self.path == '/api/update':
                 run('systemd-run', '--unit=wg-auto-update-' + str(int(time.time())), '/usr/local/sbin/wg-auto-update')
             else:
