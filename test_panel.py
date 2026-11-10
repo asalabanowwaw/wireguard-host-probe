@@ -128,6 +128,43 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(self.request('/api/update', {}).status, 200)
         self.assertTrue(any(c[0] == 'systemd-run' and c[-1] == '/usr/local/sbin/wg-auto-update' for c in self.commands))
 
+    def test_network_profile_updates_only_selected_client_export(self):
+        self.assertEqual(self.request('/api/clients', {'name': 'laptop'}).status, 200)
+        before = panel.load()
+        before_config = panel.CONFIG.read_text()
+        self.commands.clear()
+        path = '/api/clients/0123456789abcdef/tuning'
+        self.assertEqual(self.request(path, {'profile': 'balanced'}).status, 200)
+        after = panel.load()
+        self.assertEqual(before['clients'][0]['private'], after['clients'][0]['private'])
+        self.assertEqual(before['clients'][1], after['clients'][1])
+        self.assertEqual(panel.CONFIG.read_text(), before_config)
+        self.assertEqual(self.commands, [])
+        config = self.request('/api/clients/0123456789abcdef/config').read().decode()
+        self.assertIn('MTU = 1360', config)
+        self.assertIn('PersistentKeepalive = 25', config)
+        self.assertEqual(self.request(path, {'profile': 'custom', 'mtu': 1380, 'keepalive': 15, 'dns': '9.9.9.9'}).status, 200)
+        config = self.request('/api/clients/0123456789abcdef/config').read().decode()
+        self.assertIn('MTU = 1380', config)
+        self.assertIn('PersistentKeepalive = 15', config)
+        self.assertIn('DNS = 9.9.9.9', config)
+        self.assertEqual(self.request(path, {'profile': 'default'}).status, 200)
+        self.assertNotIn('tuning', panel.load()['clients'][0])
+
+    def test_network_profiles_validate_and_require_auth(self):
+        path = '/api/clients/0123456789abcdef/tuning'
+        old = (panel.ROOT / 'state.json').read_text()
+        self.assertEqual(self.request(path, {'profile': 'idle'}, auth=False).status, 401)
+        self.assertEqual(self.request(path, {'profile': 'idle'}, csrf=False).status, 403)
+        for body in [dict(profile='invalid'), dict(profile='custom', mtu=9000, keepalive=25),
+                     dict(profile='custom', mtu=1280, keepalive=-1), dict(profile='balanced', dns='invalid'),
+                     dict(profile='custom', mtu='invalid', keepalive=25)]:
+            self.assertEqual(self.request(path, body).status, 400)
+            self.assertEqual((panel.ROOT / 'state.json').read_text(), old)
+        self.assertEqual(self.request(path, {'profile': 'idle'}).status, 200)
+        config = self.request('/api/clients/0123456789abcdef/config').read().decode()
+        self.assertIn('PersistentKeepalive = 0', config)
+
     def test_upgrade_imports_original_client_without_losing_other_peers(self):
         (panel.ROOT / 'state.json').unlink()
         original = panel.ROOT / 'original-client.conf'

@@ -10,6 +10,13 @@ Panel features:
 - View handshake timestamps and traffic counters.
 - Change the advertised endpoint hostname/IP, advertised port, DNS and MTU for client exports.
 - Install project updates with a button or `sudo wg-auto-update`.
+- Tune each client separately with connection profiles, custom MTU/keepalive and optional DNS overrides.
+
+### Per-client network settings
+
+Expand **Network profile** under a client. Compatibility uses MTU 1280; Balanced tries 1360; Larger packets tries 1420. These presets are starting points for testing, not measurements of the client's route or promises of faster speeds. Smaller MTUs can help on constrained paths; larger MTUs can improve efficiency only when the entire path supports them. Custom mode allows MTU 1280–1420, keepalive 0–120 seconds and up to three DNS IP addresses. The less-idle-traffic preset disables keepalive; NAT mappings may then expire while idle. WireGuard's general NAT keepalive guidance is 25 seconds: https://www.wireguard.com/quickstart/ .
+
+Saving a profile changes only that client's future config downloads. Its keys, address and server peer remain the same, and other clients are unaffected. Download and re-import the updated config on the device, reconnect, then compare real download/upload performance and reliability. Try one change at a time. Select **Use panel defaults** to remove the override. The VPS cannot infer an optimal end-to-end MTU, client-side DNS latency, packet loss or throughput from WireGuard handshake timestamps/counters alone. A client-side test is needed for measured optimization.
 
 ### Open the panel
 

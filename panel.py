@@ -24,6 +24,12 @@ IFACE = 'wgauto0'
 MUTATION_LOCK = threading.Lock()
 AUTH_LOCK = threading.Lock()
 AUTH_FAILURES = {}
+PROFILES = {
+    'compatible': dict(label='Compatibility — smaller packets', mtu=1280, keepalive=25),
+    'balanced': dict(label='Balanced — try on stable connections', mtu=1360, keepalive=25),
+    'large': dict(label='Larger packets — test before using', mtu=1420, keepalive=25),
+    'idle': dict(label='Less idle traffic — keepalive disabled', mtu=1280, keepalive=0),
+}
 
 
 def run(*args, data=None):
@@ -122,19 +128,47 @@ def save(state):
 
 
 def client_config(state, c):
+    tuning = effective_tuning(state, c)
+    mtu_line = f"MTU = {tuning['mtu']}"
     return f"""[Interface]
 PrivateKey = {c['private']}
 Address = {c['address']}/32
-DNS = {state['dns']}
-MTU = {state['mtu']}
+DNS = {tuning['dns']}
+{mtu_line}
 
 [Peer]
 PublicKey = {state['serverPublic']}
 PresharedKey = {c['psk']}
 Endpoint = {state['host']}:{state['port']}
 AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
+PersistentKeepalive = {tuning['keepalive']}
 """
+
+
+def effective_tuning(state, c):
+    tuning = c.get('tuning', {})
+    return dict(profile=tuning.get('profile', 'default'), mtu=tuning.get('mtu', state['mtu']),
+                keepalive=tuning.get('keepalive', 25), dns=tuning.get('dns') or state['dns'])
+
+
+def set_tuning(client, body):
+    profile = body.get('profile', 'default')
+    if profile == 'default':
+        client.pop('tuning', None)
+        return
+    if profile == 'custom':
+        mtu, keepalive = int(body['mtu']), int(body['keepalive'])
+    elif profile in PROFILES:
+        mtu, keepalive = PROFILES[profile]['mtu'], PROFILES[profile]['keepalive']
+    else:
+        raise ValueError('Unknown network profile.')
+    if not 1280 <= mtu <= 1420 or not 0 <= keepalive <= 120:
+        raise ValueError('MTU must be 1280–1420; keepalive must be 0–120 seconds.')
+    raw_dns = str(body.get('dns', '')).strip()
+    dns = ', '.join(str(ipaddress.ip_address(x.strip())) for x in raw_dns.split(',')) if raw_dns else ''
+    if dns and len(dns.split(',')) > 3:
+        raise ValueError('Provide at most three DNS addresses.')
+    client['tuning'] = dict(profile=profile, mtu=mtu, keepalive=keepalive, dns=dns)
 
 
 def make_server(host='0.0.0.0', port=8787):
@@ -270,9 +304,10 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     error = 'WireGuard is unavailable. Check sudo systemctl status wg-quick@wgauto0.'
                 return self.send(200, dict(host=state['host'], port=state['port'], dns=state['dns'], mtu=state['mtu'],
+                    profiles=PROFILES,
                     listenPort=fields(state['header'])['ListenPort'], error=error,
                     version=Path(__file__).with_name('VERSION').read_text().strip(),
-                    unmanaged=len(state['unmanaged']), clients=[dict(id=c['id'], name=c['name'], address=c['address'], **peers.get(c['public'], {})) for c in state['clients']]))
+                    unmanaged=len(state['unmanaged']), clients=[dict(id=c['id'], name=c['name'], address=c['address'], tuning=effective_tuning(state, c), dnsOverride=c.get('tuning', {}).get('dns', ''), **peers.get(c['public'], {})) for c in state['clients']]))
             match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/config', self.path)
             if match:
                 c = next((c for c in state['clients'] if c['id'] == match[1]), None)
@@ -303,7 +338,14 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Invalid request length')
             body = json.loads(self.rfile.read(length))
             state = load()
-            if self.path == '/api/settings':
+            tuning_match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/tuning', self.path)
+            if tuning_match:
+                client = next((c for c in state['clients'] if c['id'] == tuning_match[1]), None)
+                if not client:
+                    raise ValueError('Client not found.')
+                set_tuning(client, body)
+                atomic(ROOT / 'state.json', json.dumps(state))
+            elif self.path == '/api/settings':
                 settings(state, body)
                 # Endpoint/DNS/MTU changes affect exported configs, not the server listener.
                 atomic(ROOT / 'state.json', json.dumps(state))
