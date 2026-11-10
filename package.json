@@ -1,0 +1,8 @@
+{
+  "name": "wireguard-host-probe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js hosting compatibility probe for WireGuard",
+  "scripts": { "start": "node index.js", "check": "node index.js --check" },
+  "engines": { "node": ">=18" }
+}
