@@ -39,6 +39,14 @@ class LocalTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 local_app.parse_config(bad)
 
+    def test_low_mtu_config_import(self):
+        source = fixture()
+        source['client']['tuning']['mtu'] = 1200
+        text = panel.client_config(source['state'], source['client'])
+        self.assertEqual(local_app.parse_config(text)['client']['tuning']['mtu'], 1200)
+        with self.assertRaises(ValueError):
+            local_app.parse_config(text.replace('MTU = 1200', 'MTU = 575'))
+
     def test_best_requires_both_connectivity_requests_and_download(self):
         partial = dict(successes=1, medianMs=1, download=dict(ok=True, mbps=100))
         failed_download = dict(successes=2, medianMs=1, download=dict(ok=False, mbps=100))

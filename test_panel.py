@@ -245,6 +245,28 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(exported['inbounds'][0]['protocol'], 'mixed')
         self.assertEqual((panel.ROOT / 'state.json').read_text(), before)
 
+    def test_low_mtu_exports_ipv4_only_without_changing_peer_keys(self):
+        path = '/api/clients/0123456789abcdef/'
+        old = panel.load()['clients'][0]['private']
+        for mtu in [576, 1200, 1279]:
+            self.assertEqual(self.request(path + 'tuning', dict(profile='custom', mtu=mtu, keepalive=25)).status, 200)
+            config = self.request(path + 'config').read().decode()
+            self.assertIn('MTU = ' + str(mtu), config)
+            self.assertIn('AllowedIPs = 0.0.0.0/0\n', config)
+            self.assertNotIn('::/0', config)
+            self.assertIn('IPv6 is not captured', config)
+            exported = json.load(self.request(path + 'xray'))
+            self.assertEqual(exported['outbounds'][0]['settings']['mtu'], mtu)
+            self.assertEqual(exported['routing']['rules'][0]['ip'], ['::/0'])
+        self.assertEqual(panel.load()['clients'][0]['private'], old)
+        self.assertEqual(self.request(path + 'tuning', dict(profile='custom', mtu=575, keepalive=25)).status, 400)
+        self.assertEqual(self.request(path + 'tuning', dict(profile='custom', mtu=1280, keepalive=25)).status, 200)
+        self.assertIn('AllowedIPs = 0.0.0.0/0, ::/0', self.request(path + 'config').read().decode())
+
+    def test_low_mtu_saved_presets_and_defaults(self):
+        self.assertEqual(self.request('/api/presets', dict(kind='connection', action='save', name='Low MTU', mtu=1200, keepalive=25)).status, 200)
+        self.assertEqual(self.request('/api/settings', dict(host='vpn.example.com', port=51820, dns='1.1.1.1', mtu=1200)).status, 200)
+
     def test_diagnostics_are_authenticated_and_read_only(self):
         self.assertEqual(self.request('/api/diagnostics', auth=False).status, 401)
         def checked(*args, data=None):

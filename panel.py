@@ -26,6 +26,7 @@ MUTATION_LOCK = threading.Lock()
 AUTH_LOCK = threading.Lock()
 AUTH_FAILURES = {}
 PROFILES = {
+    'small': dict(label='Small packets — IPv4 only', mtu=1200, keepalive=25),
     'compatible': dict(label='Compatibility — smaller packets', mtu=1280, keepalive=25),
     'balanced': dict(label='Balanced — try on stable connections', mtu=1360, keepalive=25),
     'large': dict(label='Larger packets — test before using', mtu=1420, keepalive=25),
@@ -136,7 +137,10 @@ def save(state):
 def client_config(state, c):
     tuning = effective_tuning(state, c)
     mtu_line = f"MTU = {tuning['mtu']}"
-    return f"""[Interface]
+    low_mtu = tuning['mtu'] < 1280
+    warning = '# IPv4-only low-MTU profile. IPv6 is not captured and may bypass this VPN.\n' if low_mtu else ''
+    routes = '0.0.0.0/0' if low_mtu else '0.0.0.0/0, ::/0'
+    return f"""{warning}[Interface]
 PrivateKey = {c['private']}
 Address = {c['address']}/32
 DNS = {tuning['dns']}
@@ -146,7 +150,7 @@ DNS = {tuning['dns']}
 PublicKey = {state['serverPublic']}
 PresharedKey = {c['psk']}
 Endpoint = {state['host']}:{state['port']}
-AllowedIPs = 0.0.0.0/0, ::/0
+AllowedIPs = {routes}
 PersistentKeepalive = {tuning['keepalive']}
 """
 
@@ -186,7 +190,7 @@ def set_tuning(client, body, state=None):
         mtu, keepalive = selected['mtu'], selected['keepalive']
     else:
         raise ValueError('Unknown network profile.')
-    if not 1280 <= mtu <= 1420 or not 0 <= keepalive <= 120:
+    if not 576 <= mtu <= 1420 or not 0 <= keepalive <= 120:
         raise ValueError('MTU must be 1280–1420; keepalive must be 0–120 seconds.')
     dns = normalize_dns(body.get('dns', ''))
     client['tuning'] = dict(profile=profile, mtu=mtu, keepalive=keepalive, dns=dns)
@@ -216,7 +220,7 @@ def manage_preset(state, body):
         value = dict(label=name, dns=normalize_dns(body.get('dns', ''), required=True))
     else:
         mtu, keepalive = int(body['mtu']), int(body['keepalive'])
-        if not 1280 <= mtu <= 1420 or not 0 <= keepalive <= 120:
+        if not 576 <= mtu <= 1420 or not 0 <= keepalive <= 120:
             raise ValueError('MTU must be 1280–1420; keepalive must be 0–120.')
         value = dict(label=name, mtu=mtu, keepalive=keepalive)
     presets[key] = value
@@ -337,7 +341,7 @@ def settings(state, body):
         if re.fullmatch(r'[0-9.]+', host) or any(not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', label) for label in host.split('.')):
             raise ValueError('Invalid hostname or IPv4 address.')
     port, mtu = int(body['port']), int(body['mtu'])
-    if not 1 <= port <= 65535 or not 1280 <= mtu <= 1420:
+    if not 1 <= port <= 65535 or not 576 <= mtu <= 1420:
         raise ValueError('Port must be 1–65535; MTU must be 1280–1420.')
     dns = [str(ipaddress.ip_address(x.strip())) for x in str(body['dns']).split(',')]
     if not 1 <= len(dns) <= 3:

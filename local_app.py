@@ -89,7 +89,7 @@ def parse_config(text):
     addr = ipaddress.ip_interface(address)
     if addr.version != 4:
         raise ValueError('This tuner currently supports IPv4 client addresses.')
-    if not 1280 <= mtu <= 1420 or not 0 <= keepalive <= 120:
+    if not 576 <= mtu <= 1420 or not 0 <= keepalive <= 120:
         raise ValueError('Use an MTU of 1280–1420 and keepalive of 0–120.')
     dns = panel.normalize_dns(dns, required=True)
     return dict(state=dict(host=host, port=port, serverPublic=public, dns=dns, mtu=mtu),
@@ -229,7 +229,8 @@ def run_scan(mode):
         REPORT['preflight'] = preflight()
         if mode == 'preflight':
             return
-        combos = [(mtu, dns) for mtu in SIZES for dns in DNS_CHOICES]
+        sizes = sorted(set(SIZES + [IMPORTED['client']['tuning']['mtu']]))
+        combos = [(mtu, dns) for mtu in sizes for dns in DNS_CHOICES]
         # Alternate DNS order on successive MTUs to reduce fixed order effects.
         combos[3:6] = list(reversed(combos[3:6]))
         for index, (mtu, dns) in enumerate(combos):
