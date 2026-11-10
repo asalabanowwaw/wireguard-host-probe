@@ -1,4 +1,4 @@
-﻿// Development-only browser test. Uses an explicit fixture API, never a real VPN.
+// Development-only browser test. Uses an explicit fixture API, never a real VPN.
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -20,7 +20,7 @@ function snapshot(){return {host:'vpn.example.com',port:51820,listenPort:51820,d
  await page.route('https://diana.test/**',async route=>{
   const req=route.request(),url=new URL(req.url()),body=req.method()==='POST'?req.postDataJSON():null;
   let result={ok:true},type='application/json';
-  if(url.pathname==='/')return route.fulfill({status:200,contentType:'text/html',body:html,headers:{'Content-Security-Policy':"default-src 'self'; img-src 'self' data: blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'"}});
+  if(url.pathname==='/')return route.fulfill({status:200,contentType:'text/html',body:html,headers:{'Content-Security-Policy':"default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'"}});
   if(url.pathname==='/api/status')result=snapshot();
   else if(url.pathname==='/api/activity')result=[{time:now-30,text:'Created client Diana-laptop'}];
   else if(url.pathname==='/api/diagnostics')result={checks:[{label:'IPv4 forwarding',ok:true,detail:'1'},{label:'VPN internet NAT rule',ok:true,detail:'Present'}],note:'UI test fixture: not a real server diagnostic.'};
@@ -36,6 +36,11 @@ function snapshot(){return {host:'vpn.example.com',port:51820,listenPort:51820,d
  try{
   await page.goto('https://diana.test/');await page.waitForFunction(()=>document.querySelector('#metric-total').textContent==='3');
   assert.equal(await page.locator('#server-status').textContent(),'WireGuard responding');
+  await page.evaluate(()=>document.fonts.ready);
+  assert.ok(await page.evaluate(()=>document.fonts.check('500 16px Manrope')),'Body font did not load');
+  assert.ok(await page.evaluate(()=>document.fonts.check('500 16px "Space Grotesk"')),'Heading font did not load');
+  for(const width of [390,768,1024,1440]){await page.setViewportSize({width,height:1100});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'Overview overflow at '+width);}
+  await page.setViewportSize({width:1440,height:1100});
   await page.screenshot({path:process.env.SCREENSHOT_PATH||path.join(require('node:os').tmpdir(),'diana-overview-fixture.png'),fullPage:true});
   await page.locator('[data-view=devices]').click();assert.equal(await page.locator('.peer-card').count(),3);
   await page.locator('#search').fill('Pocket');assert.equal(await page.locator('.peer-card').count(),1);await page.locator('#search').fill('');
@@ -61,4 +66,3 @@ function snapshot(){return {host:'vpn.example.com',port:51820,listenPort:51820,d
   assert.deepEqual(errors,[]);console.log('PASS: dashboard, search/filter, pause/resume, QR, low-MTU edit, create, presets, diagnostics, activity, theme, mobile overflow; no browser errors.');
  }finally{await browser.close()}
 })().catch(error=>{console.error(error);process.exitCode=1});
-

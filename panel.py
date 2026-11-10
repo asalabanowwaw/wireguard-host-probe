@@ -678,7 +678,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
-        self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'")
         if code == 401:
             self.send_header('WWW-Authenticate', 'Basic realm="WireGuard panel"')
         if filename:
