@@ -40,7 +40,7 @@ class PanelTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
-        self.paths = patch.multiple(panel, ROOT=root, CONFIG=root / 'server.conf', PEER_SAMPLES={}, TRAFFIC_HISTORY=[])
+        self.paths = patch.multiple(panel, ROOT=root, CONFIG=root / 'server.conf', AWG_CONFIG=root / 'awgauto0.conf', PEER_SAMPLES={}, TRAFFIC_HISTORY=[], AWG_SAMPLES={}, AWG_HISTORY=[])
         self.paths.start()
         self.state = dict(header='[Interface]\nPrivateKey = server-private\nAddress = 10.203.240.1/24\nListenPort = 51820',
                           unmanaged=['PublicKey = unmanaged\nAllowedIPs = 10.203.240.3/32'],
@@ -393,6 +393,107 @@ class PanelTests(unittest.TestCase):
         panel.atomic(panel.ROOT / 'state.json', json.dumps(state))
         panel.initialize()
         self.assertEqual(panel.load()['clients'], [])
+
+    def prepare_awg(self):
+        state = json.loads(json.dumps(self.state))
+        state.update(protocol='amneziawg', port=51821, network='10.204.240.0/24')
+        state['header'] = state['header'].replace('10.203.240.1', '10.204.240.1').replace('51820', '51821')
+        state['header'] += '\nJc = 4\nJmin = 40\nJmax = 700\nS1 = 20\nS2 = 50\nS3 = 64\nS4 = 16\nH1 = 100001\nH2 = 200001\nH3 = 300001\nH4 = 400001\nHeaderProtectionKey = secret-header-key\nContentPaddingAddition = 0-16'
+        state['clients'][0]['address'] = '10.204.240.2'
+        state['unmanaged'] = []
+        panel.atomic(panel.state_path(state), json.dumps(state))
+        panel.atomic(panel.AWG_CONFIG, panel.render_server(state))
+        original = panel.run.side_effect
+        def awg_run(*args, data=None):
+            if args[0] == panel.AWG_BIN + 'awg':
+                self.commands.append(args)
+                if args[1] == 'show':
+                    return 'private\tpublic\t51821\t4\t40\t700\toff\nclient-public\tshared\t(none)\t10.204.240.2/32\t0\t123\t456\t25'
+                return original('wg', *args[1:], data=data)
+            if args[0] == panel.AWG_BIN + 'awg-quick':
+                self.commands.append(args)
+                return Path(args[2]).read_text()
+            return original(*args, data=data)
+        panel.run.side_effect = awg_run
+        return state
+
+    def test_awg_exports_preserve_transport_and_reject_standard_exports(self):
+        self.prepare_awg()
+        base = '/api/awg/clients/0123456789abcdef/'
+        text = self.request(base + 'config').read().decode()
+        self.assertIn('HeaderProtectionKey = secret-header-key', text)
+        self.assertIn('ContentPaddingAddition = 0-16', text)
+        self.assertIn('Endpoint = vpn.example.com:51821', text)
+        self.assertIn('Address = 10.204.240.2/32', text)
+        for kind in ('uri', 'xray', 'compatible'):
+            self.assertEqual(self.request(base + kind).status, 400)
+        status = json.load(self.request('/api/awg/status'))
+        self.assertEqual(status['protocol'], 'amneziawg')
+        self.assertEqual(status['interface'], 'awgauto0')
+        self.assertNotIn('secret-header-key', json.dumps(status))
+        self.assertEqual(status['obfuscation']['Jc'], '4')
+        self.assertIn((panel.AWG_BIN + 'awg', 'show', 'awgauto0', 'dump'), self.commands)
+
+    def test_awg_changes_never_touch_wireguard_state_or_config(self):
+        self.prepare_awg()
+        before_config = panel.CONFIG.read_bytes()
+        before_state = panel.state_path().read_bytes()
+        self.assertEqual(self.request('/api/awg/clients', {'name': 'awg-phone'}).status, 200)
+        awg = panel.load('amneziawg')
+        self.assertEqual(awg['clients'][1]['address'], '10.204.240.3')
+        self.assertIn((panel.AWG_BIN + 'awg', 'genkey'), self.commands)
+        self.assertTrue(any(cmd[:2] == (panel.AWG_BIN + 'awg', 'syncconf') for cmd in self.commands))
+        self.assertEqual(self.request('/api/awg/clients/0123456789abcdef/details', {'enabled': False}).status, 200)
+        self.assertNotIn('PublicKey = client-public', panel.AWG_CONFIG.read_text())
+        self.assertEqual(self.request('/api/awg/clients/0123456789abcdef/tuning', {'profile':'custom','mtu':1280,'keepalive':25,'dns':'9.9.9.9'}).status, 200)
+        self.assertEqual(panel.load('amneziawg')['clients'][0]['tuning']['dns'], '9.9.9.9')
+        self.assertEqual(panel.CONFIG.read_bytes(), before_config)
+        self.assertEqual(panel.state_path().read_bytes(), before_state)
+
+    def test_awg_sync_failure_rolls_back_only_awg(self):
+        state = self.prepare_awg()
+        before = panel.AWG_CONFIG.read_text()
+        normal = panel.run.side_effect
+        failed = False
+        def fail_once(*args, data=None):
+            nonlocal failed
+            if args[:2] == (panel.AWG_BIN + 'awg', 'syncconf') and not failed:
+                failed = True
+                raise subprocess.CalledProcessError(1, args)
+            return normal(*args, data=data)
+        panel.run.side_effect = fail_once
+        state['clients'] = []
+        with self.assertRaises(subprocess.CalledProcessError):
+            panel.save(state)
+        self.assertEqual(panel.AWG_CONFIG.read_text(), before)
+        self.assertEqual(len(panel.load('amneziawg')['clients']), 1)
+        self.assertEqual(len(panel.load()['clients']), 1)
+
+    def test_awg_install_is_authenticated_explicit_and_background(self):
+        self.assertEqual(self.request('/api/awg/clients', {'name': 'no-install'}).status, 409)
+        self.assertEqual(self.request('/api/awg-install', {}, auth=False).status, 401)
+        self.assertEqual(self.request('/api/awg-install', {}, csrf=False).status, 403)
+        self.assertEqual(self.request('/api/awg-install', {}).status, 202)
+        status = json.load(self.request('/api/engines'))['amneziawg']
+        self.assertEqual(status['status'], 'installing')
+        self.assertFalse(status['installed'])
+        self.assertEqual(self.request('/api/awg-install', {}).status, 409)
+        self.assertTrue(any(cmd[0] == 'systemd-run' and cmd[-1] == '--install-awg' for cmd in self.commands))
+        self.assertEqual(len(panel.load()['clients']), 1)
+
+    def test_awg_initialization_preserves_existing_peers_and_state(self):
+        state = self.prepare_awg()
+        first = panel.state_path(state).read_bytes()
+        panel.initialize_awg()
+        self.assertEqual(panel.state_path(state).read_bytes(), first)
+        # A fresh AWG config is only adopted with the managed marker.
+        panel.state_path(state).unlink()
+        with self.assertRaises(ValueError):
+            panel.initialize_awg()
+        panel.atomic(panel.ROOT / 'awg-managed', '')
+        panel.initialize_awg()
+        self.assertEqual(panel.load('amneziawg')['clients'], [])
+        self.assertEqual(panel.load('amneziawg')['port'], 51821)
 
     def test_public_https_with_generated_certificate(self):
         openssl = os.environ.get('OPENSSL_BINARY') or shutil.which('openssl')

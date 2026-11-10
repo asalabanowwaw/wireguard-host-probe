@@ -194,3 +194,32 @@ Iranian options include Shecan, Begzar, and explicitly marked community/legacy e
 ### Moonlit Relay theme
 
 Diana's main theme uses ink surfaces, mint actions and violet telemetry with a framed anime observatory illustration. Bundled Manrope and Space Grotesk variable fonts load directly from the panel HTML. Dark mode has brighter secondary text and larger labels; the dawn toggle is retained. The layout adapts from desktop to phone. Effects use static light, borders and short pointer feedback; reduced-motion preferences are respected. Font license files are in `assets/fonts/`.
+
+
+### AmneziaWG alongside WireGuard
+
+Update the panel with `sudo wg-auto-update`. In the sidebar, select **AmneziaWG 3.1**, then **Install AmneziaWG**. Installation is an explicit background job and may take several minutes to build the official sources. Supported hosts are Debian/Ubuntu with systemd, `/dev/net/tun`, root access, and amd64 or arm64 CPUs. The build downloads a stable Go toolchain using its official SHA256 manifest. A working internet connection and sufficient memory/disk for a Go build are required.
+
+The installer uses the official `amnezia-vpn/amneziawg-go` release v3.1.20260828 (commit `b5928efb6ca19f0153958460c3d141f04abc5c2e`) and `amnezia-vpn/amneziawg-tools` v3.1.20260812 (commit `ee0f0a9aa34ff0a0da4b3433b9512781cfe02843`). The quick helper is locally adjusted to select the pinned Go engine rather than an unrelated installed kernel module. Source locations are recorded in `/opt/wg-auto/awg/SOURCES`. Panel updates do not silently rebuild or upgrade these protocol binaries.
+
+AmneziaWG has its own interface `awgauto0`, service `wg-auto-awg`, unused UDP port (starting at 51821), and unused subnet (selected from `10.204.240.0/24` through `10.204.254.0/24`). Native WireGuard stays on `wgauto0`. Keys, peers, default DNS, saved presets, traffic history and server configuration are separate for each workspace. Existing keys and interface state are preserved. The first AWG workspace inherits the current public endpoint and DNS defaults. The host firewall rules are created for the new interface. Open the advertised UDP port in any provider/cloud firewall yourself.
+
+After installation, create a device in the AmneziaWG workspace. Download its `.conf` or scan its QR using an **AmneziaWG 3.1 compatible client**. These are not ordinary WireGuard profiles; standard WireSock/WireGuard and Xray/v2ray export formats cannot preserve the generated 3.1 transport parameters. Those export choices are disabled for AWG. Every AWG native export includes the same padding, headers and header-protection key as the server. Transport secrets are excluded from the status response. Installation is not a guarantee against network blocking or packet loss.
+
+Operational checks:
+
+```bash
+sudo systemctl status wg-auto-awg --no-pager
+sudo /opt/wg-auto/awg/bin/awg show awgauto0
+sudo journalctl -u 'wg-auto-awg-install-*' -n 80 --no-pager
+```
+
+Server config: `/etc/amnezia/amneziawg/awgauto0.conf`. Panel AWG state: `/etc/wireguard/wg-auto-panel/awg-state.json`. Do not delete either file to reset a running VPN. The installer refuses to overwrite an unmanaged interface/config. Failed new-interface setup is cleaned up; an existing managed installation is reused. The installer is embedded in `panel.py` at build time so even older three-file panel updaters can install this feature on the first update.
+
+### Reference themes and responsive layouts
+
+The Rose & Moon light/dark themes follow the supplied visual references with generated illustration backgrounds, Cormorant Garamond headings, Lora editorial text, and Manrope controls. All controls and values are live HTML, and both themes apply to every tab. Small-screen navigation uses a keyboard-accessible drawer. Touch inputs use readable sizing, hover effects are gated to pointing devices, safe-area insets are supported, and reduced-motion preferences are respected. Automated browser checks cover every tab in both themes at widths 360, 390, 768, 1024 and 1440; touch feel, browser chrome and on-screen keyboards still need a physical-device check.
+
+### Linux tunnel verification
+
+The `Panel and AmneziaWG checks` GitHub Actions workflow compiles the same pinned protocol sources and runs `test_awg_linux.sh` in disposable network namespaces. It checks an AWG 3.1 handshake, ICMP and HTTP over a real obfuscated tunnel with ephemeral test keys. It does not use production VPS credentials or firewall rules. Run this test only on a disposable Linux VM with root/NET_ADMIN and TUN access. Local Windows tests cover the panel APIs, native exports, rollback, state isolation and browser interactions; they cannot validate a Linux interface or the user's ISP path.

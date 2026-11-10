@@ -1,0 +1,35 @@
+name: Panel and AmneziaWG checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  panel:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest -q test_panel.py test_local_app.py
+      - run: bash -n install.sh update.sh awg-install.sh test_awg_linux.sh
+  awg-tunnel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - name: Build pinned official AmneziaWG sources
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential pkg-config libmnl-dev iproute2 iputils-ping curl
+          mkdir -p /tmp/diana-awg/{go,tools,bin}
+          curl -fsSL https://codeload.github.com/amnezia-vpn/amneziawg-go/tar.gz/b5928efb6ca19f0153958460c3d141f04abc5c2e | tar -xz --strip-components=1 -C /tmp/diana-awg/go
+          curl -fsSL https://codeload.github.com/amnezia-vpn/amneziawg-tools/tar.gz/ee0f0a9aa34ff0a0da4b3433b9512781cfe02843 | tar -xz --strip-components=1 -C /tmp/diana-awg/tools
+          (cd /tmp/diana-awg/go && go build -trimpath -o /tmp/diana-awg/bin/amneziawg-go .)
+          make -C /tmp/diana-awg/tools/src -j2
+          cp /tmp/diana-awg/tools/src/wg /tmp/diana-awg/bin/awg
+      - name: Test real AmneziaWG 3.1 traffic in isolated namespaces
+        run: sudo bash test_awg_linux.sh /tmp/diana-awg/bin

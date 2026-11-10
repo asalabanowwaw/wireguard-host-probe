@@ -10,6 +10,7 @@ import re
 import secrets
 import ssl
 import socket
+import sys
 import subprocess
 import tempfile
 import time
@@ -22,6 +23,11 @@ ROOT = Path(os.environ.get('WG_AUTO_DATA', '/etc/wireguard/wg-auto-panel'))
 CONFIG = Path(os.environ.get('WG_AUTO_CONFIG', '/etc/wireguard/wgauto0.conf'))
 ORIGINAL_CLIENT = Path('/root/wireguard-client.conf')
 IFACE = 'wgauto0'
+AWG_CONFIG = Path('/etc/amnezia/amneziawg/awgauto0.conf')
+AWG_BIN = '/opt/wg-auto/awg/bin/'
+AWG_HISTORY = []
+AWG_SAMPLES = {}
+AWG_KEYS = ('Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4', 'HeaderProtectionKey', 'ContentPaddingAddition')
 MUTATION_LOCK = threading.Lock()
 AUTH_LOCK = threading.Lock()
 AUTH_FAILURES = {}
@@ -299,8 +305,44 @@ def fields(text):
     return dict(re.findall(r'^\s*(\w+)\s*=\s*(.*?)\s*$', text, re.M))
 
 
-def load():
-    return json.loads((ROOT / 'state.json').read_text())
+def state_path(state=None):
+    return ROOT / ('awg-state.json' if (state or {}).get('protocol') == 'amneziawg' else 'state.json')
+
+
+def engine(state):
+    if state.get('protocol') == 'amneziawg':
+        return AWG_BIN + 'awg', AWG_BIN + 'awg-quick', 'awgauto0', AWG_CONFIG, 'wg-auto-awg'
+    return 'wg', 'wg-quick', IFACE, CONFIG, 'wg-quick@' + IFACE
+
+
+def load(protocol='wireguard'):
+    return json.loads(state_path({'protocol': protocol}).read_text())
+
+
+def initialize_awg():
+    if state_path({'protocol': 'amneziawg'}).exists():
+        return
+    if not AWG_CONFIG.exists() or not (ROOT / 'awg-managed').exists():
+        raise ValueError('Install AmneziaWG from the protocol card first.')
+    base = load()
+    parts = AWG_CONFIG.read_text().split('[Peer]')
+    header = parts[0].rstrip()
+    server = fields(header)
+    state = dict(protocol='amneziawg', header=header, unmanaged=[block.strip() for block in parts[1:]], clients=[],
+                 host=base['host'], port=int(server['ListenPort']), dns=base['dns'], mtu=1280,
+                 network=str(ipaddress.ip_interface(server['Address']).network),
+                 serverPublic=run(AWG_BIN + 'awg', 'pubkey', data=server['PrivateKey'] + '\n'))
+    atomic(state_path(state), json.dumps(state))
+
+
+def awg_install_status():
+    path = ROOT / 'awg-install.json'
+    result = json.loads(path.read_text()) if path.exists() else {'status': 'not-installed'}
+    result['installed'] = state_path({'protocol': 'amneziawg'}).exists()
+    if result.get('status') == 'installing' and time.time() - result.get('time', 0) > 1800:
+        result.update(status='failed', message='Installation exceeded 30 minutes. Check the install journal before retrying.')
+    return result
+
 
 
 def initialize():
@@ -344,40 +386,45 @@ def render_server(state):
     return state['header'] + '\n\n' + ''.join('[Peer]\n' + b + '\n\n' for b in blocks)
 
 
-def sync(text):
+def sync(text, state=None):
+    command, quick, iface, _, _ = engine(state or {})
     # wg strips Address and hook settings before sending the kernel configuration.
     fd, name = tempfile.mkstemp(dir=ROOT, suffix='.conf')
     try:
         with os.fdopen(fd, 'w') as f:
             f.write(text)
-        stripped = run('wg-quick', 'strip', name)
+        stripped = run(quick, 'strip', name)
         Path(name).write_text(stripped)
-        run('wg', 'syncconf', IFACE, name)
+        run(command, 'syncconf', iface, name)
     finally:
         os.unlink(name)
 
 
 def save(state):
-    old = CONFIG.read_text()
-    old_state = (ROOT / 'state.json').read_text()
+    config = engine(state)[3]
+    path = state_path(state)
+    old, old_state = config.read_text(), path.read_text()
     text = render_server(state)
-    # Preserve the last working state for recovery as well as rolling back errors.
-    atomic(ROOT / 'previous-server.conf', old)
-    atomic(ROOT / 'previous-state.json', old_state)
+    prefix = 'awg-' if state.get('protocol') == 'amneziawg' else ''
+    atomic(ROOT / (prefix + 'previous-server.conf'), old)
+    atomic(ROOT / (prefix + 'previous-state.json'), old_state)
     try:
-        sync(text)
-        atomic(CONFIG, text)
-        atomic(ROOT / 'state.json', json.dumps(state))
+        sync(text, state)
+        atomic(config, text)
+        atomic(path, json.dumps(state))
     except Exception:
-        atomic(CONFIG, old)
-        atomic(ROOT / 'state.json', old_state)
-        sync(old)
+        atomic(config, old)
+        atomic(path, old_state)
+        sync(old, state)
         raise
 
 
 def client_config(state, c):
     tuning = effective_tuning(state, c)
     mtu_line = f"MTU = {tuning['mtu']}"
+    if state.get('protocol') == 'amneziawg':
+        server = fields(state['header'])
+        mtu_line += '\n' + '\n'.join(key + ' = ' + server[key] for key in AWG_KEYS if key in server)
     low_mtu = tuning['mtu'] < 1280
     warning = '# IPv4-only low-MTU profile. IPv6 is not captured and may bypass this VPN.\n' if low_mtu else ''
     routes = '0.0.0.0/0' if low_mtu else '0.0.0.0/0, ::/0'
@@ -468,6 +515,8 @@ def manage_preset(state, body):
 
 
 def share_uri(state, client):
+    if state.get('protocol') == 'amneziawg':
+        raise ValueError('Use an AmneziaWG 3.1 compatible app and the native .conf or QR export. Standard WireGuard/Xray exports cannot preserve this protocol.')
     tuning = effective_tuning(state, client)
     query = urlencode(dict(publickey=state['serverPublic'], presharedkey=client['psk'],
                            address=client['address'] + '/32', mtu=tuning['mtu'],
@@ -476,6 +525,8 @@ def share_uri(state, client):
 
 
 def xray_config(state, client):
+    if state.get('protocol') == 'amneziawg':
+        raise ValueError('Use an AmneziaWG 3.1 compatible app and the native .conf or QR export. Standard WireGuard/Xray exports cannot preserve this protocol.')
     tuning = effective_tuning(state, client)
     dns = [x.strip() for x in tuning['dns'].split(',')]
     return dict(log=dict(loglevel='warning'), dns=dict(servers=dns, queryStrategy='UseIPv4'),
@@ -490,6 +541,7 @@ def xray_config(state, client):
 
 
 def diagnostics(state):
+    _, _, iface, _, service = engine(state)
     checks = []
     def check(label, command, expected=None):
         try:
@@ -500,7 +552,7 @@ def diagnostics(state):
         except Exception:
             checks.append(dict(label=label, ok=False, detail='Command failed or rule was not found'))
             return None
-    check('WireGuard service', ('systemctl', 'is-active', 'wg-quick@' + IFACE), 'active')
+    check('AmneziaWG service' if state.get('protocol') == 'amneziawg' else 'WireGuard service', ('systemctl', 'is-active', service), 'active')
     check('IPv4 forwarding', ('sysctl', '-n', 'net.ipv4.ip_forward'), '1')
     wan = None
     try:
@@ -513,8 +565,8 @@ def diagnostics(state):
     check('WireGuard host firewall rule', ('iptables', '-C', 'INPUT', '-p', 'udp', '--dport', port, '-j', 'ACCEPT'))
     if wan:
         subnet = state['network']
-        check('Outbound VPN forwarding rule', ('iptables', '-C', 'FORWARD', '-i', IFACE, '-o', wan, '-s', subnet, '-j', 'ACCEPT'))
-        check('Return traffic forwarding rule', ('iptables', '-C', 'FORWARD', '-i', wan, '-o', IFACE, '-d', subnet, '-m', 'conntrack', '--ctstate', 'RELATED,ESTABLISHED', '-j', 'ACCEPT'))
+        check('Outbound VPN forwarding rule', ('iptables', '-C', 'FORWARD', '-i', iface, '-o', wan, '-s', subnet, '-j', 'ACCEPT'))
+        check('Return traffic forwarding rule', ('iptables', '-C', 'FORWARD', '-i', wan, '-o', iface, '-d', subnet, '-m', 'conntrack', '--ctstate', 'RELATED,ESTABLISHED', '-j', 'ACCEPT'))
         check('VPN internet NAT rule', ('iptables', '-t', 'nat', '-C', 'POSTROUTING', '-s', subnet, '-o', wan, '-j', 'MASQUERADE'))
     public_ip = check('VPS internet HTTPS access', ('curl', '-4fsS', '--connect-timeout', '3', '--max-time', '5', 'https://api.ipify.org'))
     if public_ip:
@@ -526,13 +578,15 @@ def diagnostics(state):
 
 
 def client_metrics(state, peers, now=None):
+    samples = AWG_SAMPLES if state.get('protocol') == 'amneziawg' else PEER_SAMPLES
+    history = AWG_HISTORY if state.get('protocol') == 'amneziawg' else TRAFFIC_HISTORY
     now = time.time() if now is None else now
     clients, received_rate, sent_rate = [], 0.0, 0.0
     with METRICS_LOCK:
         for client in state['clients']:
             peer = dict(peers.get(client['public'], {}))
             enabled = client.get('enabled', True)
-            before = PEER_SAMPLES.get(client['id'])
+            before = samples.get(client['id'])
             rx, tx = peer.get('received', 0), peer.get('sent', 0)
             down, up, changes = 0.0, 0.0, before.get('changes', 0) if before else 0
             endpoint = peer.get('endpoint', '')
@@ -549,7 +603,7 @@ def client_metrics(state, peers, now=None):
             sample_time, sample_rx, sample_tx = now, rx, tx
             if before and 0 <= now - before['time'] < 1:
                 sample_time, sample_rx, sample_tx = before['time'], before['rx'], before['tx']
-            PEER_SAMPLES[client['id']] = dict(time=sample_time, rx=sample_rx, tx=sample_tx, endpoint=endpoint,
+            samples[client['id']] = dict(time=sample_time, rx=sample_rx, tx=sample_tx, endpoint=endpoint,
                                              changes=changes, down=down, up=up)
             handshake = peer.get('handshake', 0)
             recent = bool(enabled and handshake and 0 <= now - handshake <= 180)
@@ -572,14 +626,14 @@ def client_metrics(state, peers, now=None):
                 tuning=tuning, dnsOverride=client.get('tuning', {}).get('dns', ''), receivedRate=round(down),
                 sentRate=round(up), endpointChanges=changes, hints=hints, **peer))
         known = {c['id'] for c in state['clients']}
-        for key in list(PEER_SAMPLES):
+        for key in list(samples):
             if key not in known:
-                del PEER_SAMPLES[key]
+                del samples[key]
         point = dict(time=int(now), received=round(received_rate), sent=round(sent_rate))
-        if not TRAFFIC_HISTORY or now - TRAFFIC_HISTORY[-1]['time'] >= 2:
-            TRAFFIC_HISTORY.append(point)
-            del TRAFFIC_HISTORY[:-60]
-        return dict(clients=clients, traffic=dict(**point, history=list(TRAFFIC_HISTORY)),
+        if not history or now - history[-1]['time'] >= 2:
+            history.append(point)
+            del history[:-60]
+        return dict(clients=clients, traffic=dict(**point, history=list(history)),
                     summary=dict(total=len(clients), enabled=sum(c['enabled'] for c in clients),
                     recent=sum(c['recent'] for c in clients), received=sum(c.get('received', 0) for c in clients),
                     sent=sum(c.get('sent', 0) for c in clients)))
@@ -711,13 +765,25 @@ class Handler(BaseHTTPRequestHandler):
             AUTH_FAILURES.pop(address, None)
         return True
 
+    def route_protocol(self):
+        protocol = 'wireguard'
+        if self.path.startswith('/api/awg/'):
+            self.path = '/api/' + self.path[len('/api/awg/'):]
+            protocol = 'amneziawg'
+        return protocol
+
     def do_GET(self):
         if not self.authorized():
             return
         try:
             if self.path == '/':
                 return self.send(200, Path(__file__).with_name('panel.html').read_bytes(), 'text/html; charset=utf-8')
-            state = load()
+            protocol = self.route_protocol()
+            if self.path == '/api/engines':
+                return self.send(200, {'amneziawg': awg_install_status()})
+            if protocol == 'amneziawg' and not state_path({'protocol': protocol}).exists():
+                return self.send(409, {'error': 'AmneziaWG is not installed. Use the protocol installation card.'})
+            state = load(protocol)
             if self.path == '/api/activity':
                 path = ROOT / 'activity.json'
                 return self.send(200, json.loads(path.read_text()) if path.exists() else [])
@@ -726,13 +792,16 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/status':
                 peers, error = {}, None
                 try:
-                    dump = run('wg', 'show', IFACE, 'dump').splitlines()
+                    command, _, iface, _, service = engine(state)
+                    dump = run(command, 'show', iface, 'dump').splitlines()
                     for line in dump[1:]:
                         p = line.split('\t')
                         peers[p[0]] = dict(endpoint='' if p[2] == '(none)' else p[2], handshake=int(p[4]), received=int(p[5]), sent=int(p[6]))
                 except Exception:
-                    error = 'WireGuard is unavailable. Check sudo systemctl status wg-quick@wgauto0.'
-                return self.send(200, dict(host=state['host'], port=state['port'], dns=state['dns'], mtu=state['mtu'],
+                    error = 'VPN interface is unavailable. Check sudo systemctl status ' + engine(state)[4] + '.'
+                return self.send(200, dict(protocol=state.get('protocol', 'wireguard'), interface=engine(state)[2],
+                    obfuscation={k: v for k, v in fields(state['header']).items() if k in AWG_KEYS and k != 'HeaderProtectionKey'},
+                    host=state['host'], port=state['port'], dns=state['dns'], mtu=state['mtu'],
                     profiles={**PROFILES, **state.get('connectionPresets', {})},
                     connectionPresets=state.get('connectionPresets', {}),
                     dnsPresets={**DNS_PRESETS, **state.get('dnsPresets', {})}, savedDnsPresets=state.get('dnsPresets', {}),
@@ -743,6 +812,8 @@ class Handler(BaseHTTPRequestHandler):
             if match:
                 c = next((c for c in state['clients'] if c['id'] == match[1]), None)
                 if c:
+                    if protocol == 'amneziawg' and match[2] not in ('config', 'qr.svg'):
+                        return self.send(400, {'error': 'AmneziaWG requires a compatible 3.1 app. Download its native config or QR.'})
                     if match[2] == 'qr.svg':
                         try:
                             svg = run('qrencode', '-t', 'SVG', '-m', '2', data=client_config(state, c))
@@ -783,7 +854,25 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
                 raise ValueError('JSON object required.')
-            state = load()
+            protocol = self.route_protocol()
+            if self.path == '/api/awg-install':
+                if protocol != 'wireguard':
+                    raise ValueError('Invalid install route.')
+                if awg_install_status().get('status') == 'installing':
+                    return self.send(409, {'error': 'Installation is already running.'})
+                unit = 'wg-auto-awg-install-' + str(int(time.time()))
+                atomic(ROOT / 'awg-install.json', json.dumps(dict(status='installing', time=time.time(), unit=unit,
+                    message='Building official AmneziaWG sources. This can take several minutes.')))
+                try:
+                    run('systemd-run', '--unit=' + unit, '--property=RuntimeMaxSec=1800',
+                        '/usr/bin/python3', str(Path(__file__).resolve()), '--install-awg')
+                except Exception:
+                    atomic(ROOT / 'awg-install.json', json.dumps(dict(status='failed', message='Could not start install job.')))
+                    raise
+                return self.send(202, {'ok': True, 'unit': unit})
+            if protocol == 'amneziawg' and not state_path({'protocol': protocol}).exists():
+                return self.send(409, {'error': 'Install AmneziaWG before creating devices.'})
+            state = load(protocol)
             details_match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/details', self.path)
             tuning_match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/tuning', self.path)
             if details_match:
@@ -803,7 +892,7 @@ class Handler(BaseHTTPRequestHandler):
                     client['enabled'] = body['enabled']
                     save(state)
                 else:
-                    atomic(ROOT / 'state.json', json.dumps(state))
+                    atomic(state_path(state), json.dumps(state))
                 audit('Updated client ' + client['name'])
             elif self.path == '/api/clients/bulk':
                 ids = body.get('ids')
@@ -824,15 +913,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not client:
                     raise ValueError('Client not found.')
                 set_tuning(client, body, state)
-                atomic(ROOT / 'state.json', json.dumps(state))
+                atomic(state_path(state), json.dumps(state))
                 audit('Updated network settings for ' + client['name'])
             elif self.path == '/api/presets':
                 manage_preset(state, body)
-                atomic(ROOT / 'state.json', json.dumps(state))
+                atomic(state_path(state), json.dumps(state))
             elif self.path == '/api/settings':
                 settings(state, body)
                 # Endpoint/DNS/MTU changes affect exported configs, not the server listener.
-                atomic(ROOT / 'state.json', json.dumps(state))
+                atomic(state_path(state), json.dumps(state))
             elif self.path == '/api/clients':
                 name = str(body.get('name', '')).strip()
                 if not re.fullmatch(r'[A-Za-z0-9_-]{1,40}', name):
@@ -849,9 +938,10 @@ class Handler(BaseHTTPRequestHandler):
                 address = next((str(a) for a in list(ipaddress.ip_network(state['network']).hosts())[1:] if str(a) not in used), None)
                 if not address:
                     raise ValueError('No client addresses remain.')
-                private = run('wg', 'genkey')
+                command = engine(state)[0]
+                private = run(command, 'genkey')
                 state['clients'].append(dict(id=secrets.token_hex(8), name=name, private=private,
-                    public=run('wg', 'pubkey', data=private + '\n'), psk=run('wg', 'genpsk'), address=address))
+                    public=run(command, 'pubkey', data=private + '\n'), psk=run(command, 'genpsk'), address=address))
                 save(state)
                 audit('Created client ' + name)
             elif self.path == '/api/revoke':
@@ -873,8 +963,30 @@ class Handler(BaseHTTPRequestHandler):
             self.send(500, {'error': 'Operation failed. Previous VPN state was preserved where possible; check journalctl -u wg-auto-panel.'})
 
 
+# BEGIN EMBEDDED AWG INSTALLER
+AWG_INSTALL_SCRIPT = '#!/usr/bin/env bash\n# Embedded into panel.py by build_panel.py. Official sources, isolated native interface.\nset -Eeuo pipefail\numask 077\n[[ $EUID -eq 0 ]] || { echo \'Root is required.\' >&2; exit 1; }\n[[ -d /run/systemd/system && -c /dev/net/tun ]] || { echo \'A systemd VPS with /dev/net/tun is required.\' >&2; exit 1; }\n. /etc/os-release\n[[ $ID == ubuntu || $ID == debian ]] || { echo \'Ubuntu or Debian is required.\' >&2; exit 1; }\nexec 9>/run/wg-auto-awg-install.lock\nflock -n 9 || { echo \'An AmneziaWG install is running.\' >&2; exit 1; }\nexport DEBIAN_FRONTEND=noninteractive\nbase=/opt/wg-auto/awg\nconfig=/etc/amnezia/amneziawg/awgauto0.conf\ndata=/etc/wireguard/wg-auto-panel\nservice=wg-auto-awg\nif [[ -f $config ]]; then\n  [[ -f $data/awg-managed ]] || { echo \'Existing unmanaged AWG configuration found; refusing to overwrite it.\' >&2; exit 1; }\n  systemctl enable --now "$service"\n  /usr/bin/python3 /opt/wg-auto/current/panel.py --initialize-awg\n  exit 0\nfi\nip link show awgauto0 >/dev/null 2>&1 && { echo \'Interface awgauto0 already exists and is not managed by this panel.\' >&2; exit 1; }\ncase $(uname -m) in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; *) echo \'Supported CPU architectures: amd64 and arm64.\' >&2; exit 1;; esac\napt-get update\napt-get install -y build-essential pkg-config libmnl-dev ca-certificates curl tar iproute2 iptables qrencode\nstage=$(mktemp -d /opt/wg-auto/awg-build.XXXXXXXX)\ncreated=0\nsuccess=0\ncleanup() {\n  if (( created && ! success )); then\n    systemctl stop "$service" || true\n    systemctl disable "$service" || true\n    rm -f "$config" "$data/awg-managed"\n  fi\n  rm -rf -- "$stage"\n}\ntrap cleanup EXIT\n# Go\'s official download manifest includes a SHA256 for the platform archive.\ncurl -fsSL --retry 2 --connect-timeout 15 --max-time 60 \'https://go.dev/dl/?mode=json\' -o "$stage/go.json"\nread -r gofile gosum < <(python3 - "$stage/go.json" "$arch" <<\'PY\'\nimport json,sys\nversions=json.load(open(sys.argv[1]))\nfor version in versions:\n    if not version[\'stable\']: continue\n    for f in version[\'files\']:\n        if f[\'os\']==\'linux\' and f[\'arch\']==sys.argv[2] and f[\'kind\']==\'archive\':\n            print(f[\'filename\'], f[\'sha256\']); sys.exit(0)\nraise SystemExit(\'No matching Go toolchain\')\nPY\n)\n[[ $gofile =~ ^go[0-9.]+\\.linux-(amd64|arm64)\\.tar\\.gz$ && $gosum =~ ^[a-f0-9]{64}$ ]] || exit 1\ncurl -fsSL --retry 2 --connect-timeout 15 --max-time 600 "https://go.dev/dl/$gofile" -o "$stage/go.tgz"\nprintf \'%s  %s\\n\' "$gosum" "$stage/go.tgz" | sha256sum -c -\ntar -xzf "$stage/go.tgz" -C "$stage"\n# Reviewed upstream releases, pinned to immutable commits.\ngo_sha=b5928efb6ca19f0153958460c3d141f04abc5c2e\ntools_sha=ee0f0a9aa34ff0a0da4b3433b9512781cfe02843\nfor spec in "amneziawg-go:$go_sha" "amneziawg-tools:$tools_sha"; do\n  repo=${spec%:*}; sha=${spec#*:}\n  curl -fsSL --retry 2 --connect-timeout 15 --max-time 120 "https://codeload.github.com/amnezia-vpn/$repo/tar.gz/$sha" -o "$stage/$repo.tgz"\n  mkdir "$stage/$repo"\n  tar -xzf "$stage/$repo.tgz" -C "$stage/$repo" --strip-components=1\ndone\nexport PATH="$stage/go/bin:$PATH"\nexport GOTOOLCHAIN=local\nexport GOCACHE="$stage/go-cache" GOPATH="$stage/go-path"\n(cd "$stage/amneziawg-go" && GOMAXPROCS=2 go build -p 1 -trimpath -o "$stage/amneziawg-go.bin" .)\nmake -C "$stage/amneziawg-tools/src" -j2\ninstall -d -m 700 "$base/bin" /etc/amnezia/amneziawg "$data"\ninstall -m 755 "$stage/amneziawg-go.bin" "$base/bin/amneziawg-go"\ninstall -m 755 "$stage/amneziawg-tools/src/wg" "$base/bin/awg"\n# Force the pinned Go engine; an older installed kernel module must not silently\n# consume a newer 3.1 configuration. Preserve upstream license/copyright headers.\npython3 - "$stage/amneziawg-tools/src/wg-quick/linux.bash" <<\'PY\'\nimport sys\nfrom pathlib import Path\np=Path(sys.argv[1]); source=p.read_text()\na=source.index(\'add_if() {\'); b=source.index(\'\\ndel_if() {\',a)\nsource=source[:a]+\'add_if() {\\n    cmd "${WG_QUICK_USERSPACE_IMPLEMENTATION:-amneziawg-go}" "$INTERFACE"\\n}\\n\'+source[b:]\np.write_text(source)\nPY\ninstall -m 755 "$stage/amneziawg-tools/src/wg-quick/linux.bash" "$base/bin/awg-quick"\nprintf \'amneziawg-go %s\\namneziawg-tools %s\\n\' "$go_sha" "$tools_sha" > "$base/SOURCES"\n# Generate an unused /24 and UDP port without changing the original WireGuard.\nexport AWG_INSTALL_CONFIG="$config"\ncreated=1\npython3 - <<\'PY\'\nimport ipaddress,json,os,secrets,subprocess\nfrom pathlib import Path\ndef run(*args, data=None):\n    return subprocess.run(args,input=data,text=True,capture_output=True,check=True).stdout.strip()\nroutes=json.loads(run(\'ip\',\'-j\',\'-4\',\'route\',\'show\',\'table\',\'all\'))\nnets=[ipaddress.ip_network(r[\'dst\'],strict=False) for r in routes if r.get(\'dst\') not in (None,\'default\')]\nnet=next((ipaddress.ip_network(f\'10.204.{i}.0/24\') for i in range(240,255)\n          if not any(ipaddress.ip_network(f\'10.204.{i}.0/24\').overlaps(n) for n in nets)),None)\nif not net: raise SystemExit(\'No free AWG subnet found\')\nports={int(line.split()[3].rsplit(\':\',1)[-1]) for line in run(\'ss\',\'-H\',\'-lun\').splitlines() if line.split()[3].rsplit(\':\',1)[-1].isdigit()}\nport=next((p for p in range(51821,51922) if p not in ports),None)\nif not port: raise SystemExit(\'No free AWG UDP port found\')\nwan=json.loads(run(\'ip\',\'-j\',\'-4\',\'route\',\'get\',\'1.1.1.1\'))[0][\'dev\']\nimport re\nif not re.fullmatch(r\'[A-Za-z0-9_.:-]+\',wan): raise SystemExit(\'Invalid WAN interface\')\nawg=\'/opt/wg-auto/awg/bin/awg\'\nlines=[\'[Interface]\',f\'Address = {net.network_address+1}/24\',f\'ListenPort = {port}\',\n       \'PrivateKey = \'+run(awg,\'genkey\'),\'MTU = 1280\', \'Jc = 4\',\'Jmin = 40\',\'Jmax = 700\',\n       f\'S1 = {16+secrets.randbelow(16)}\',f\'S2 = {40+secrets.randbelow(16)}\',\'S3 = 64\',\'S4 = 16\',\n       \'HeaderProtectionKey = \'+run(awg,\'genkey\'),\'ContentPaddingAddition = 0-16\']\nheaders=secrets.SystemRandom().sample(range(100000,4294967295),4)\nlines += [f\'H{i} = {value}\' for i,value in enumerate(headers,1)]\nrules=[f\'INPUT -p udp --dport {port} -j ACCEPT\',\n       f\'FORWARD -i %i -o {wan} -s {net} -j ACCEPT\',\n       f\'FORWARD -i {wan} -o %i -d {net} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\']\nfor rule in rules:\n    lines += [\'PostUp = iptables -I \'+rule,\'PostDown = iptables -D \'+rule]\nlines += [f\'PostUp = iptables -t nat -A POSTROUTING -s {net} -o {wan} -j MASQUERADE\',\n          f\'PostDown = iptables -t nat -D POSTROUTING -s {net} -o {wan} -j MASQUERADE\']\npath=Path(os.environ[\'AWG_INSTALL_CONFIG\']);path.write_text(\'\\n\'.join(lines)+\'\\n\');path.chmod(0o600)\nPY\ncreated=1\ntouch "$data/awg-managed"\ncat > /etc/systemd/system/wg-auto-awg.service <<\'EOF\'\n[Unit]\nDescription=Diana native AmneziaWG interface\nAfter=network-online.target\nWants=network-online.target\n[Service]\nType=oneshot\nRemainAfterExit=yes\nEnvironment=PATH=/opt/wg-auto/awg/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart=/opt/wg-auto/awg/bin/awg-quick up /etc/amnezia/amneziawg/awgauto0.conf\nExecStop=/opt/wg-auto/awg/bin/awg-quick down /etc/amnezia/amneziawg/awgauto0.conf\nTimeoutStartSec=45\nUMask=0077\n[Install]\nWantedBy=multi-user.target\nEOF\nsysctl -w net.ipv4.ip_forward=1\nsystemctl daemon-reload\nsystemctl enable --now "$service"\n"$base/bin/awg" show awgauto0 public-key >/dev/null\n/usr/bin/python3 /opt/wg-auto/current/panel.py --initialize-awg\nsuccess=1\necho \'AmneziaWG is ready. Create an AmneziaWG device in Diana and import its config into an AmneziaWG 3.1 compatible app.\'\n'
+# END EMBEDDED AWG INSTALLER
+
+
+def install_awg():
+    try:
+        subprocess.run(['bash', '-s'], input=AWG_INSTALL_SCRIPT, text=True, check=True, timeout=1700)
+        atomic(ROOT / 'awg-install.json', json.dumps(dict(status='ready', installed=True, time=time.time(),
+            message='AmneziaWG is ready. Select its workspace and create a device.')))
+    except Exception:
+        atomic(ROOT / 'awg-install.json', json.dumps(dict(status='failed', time=time.time(),
+            message='Installation failed. Inspect journalctl -u "wg-auto-awg-install-*". Existing WireGuard was not changed.')))
+        raise
+
+
 if __name__ == '__main__':
     os.umask(0o077)
+    if sys.argv[1:] == ['--install-awg']:
+        install_awg()
+        sys.exit(0)
+    if sys.argv[1:] == ['--initialize-awg']:
+        initialize_awg()
+        sys.exit(0)
     initialize()
     server = make_server()
     server.timeout = 15
