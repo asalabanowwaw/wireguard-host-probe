@@ -16,6 +16,7 @@ import time
 import traceback
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from urllib.parse import quote, urlencode
 
 ROOT = Path(os.environ.get('WG_AUTO_DATA', '/etc/wireguard/wg-auto-panel'))
 CONFIG = Path(os.environ.get('WG_AUTO_CONFIG', '/etc/wireguard/wgauto0.conf'))
@@ -29,6 +30,11 @@ PROFILES = {
     'balanced': dict(label='Balanced — try on stable connections', mtu=1360, keepalive=25),
     'large': dict(label='Larger packets — test before using', mtu=1420, keepalive=25),
     'idle': dict(label='Less idle traffic — keepalive disabled', mtu=1280, keepalive=0),
+}
+DNS_PRESETS = {
+    'cloudflare': dict(label='Cloudflare', dns='1.1.1.1, 1.0.0.1'),
+    'google': dict(label='Google', dns='8.8.8.8, 8.8.4.4'),
+    'quad9': dict(label='Quad9', dns='9.9.9.9, 149.112.112.112'),
 }
 
 
@@ -147,28 +153,95 @@ PersistentKeepalive = {tuning['keepalive']}
 
 def effective_tuning(state, c):
     tuning = c.get('tuning', {})
-    return dict(profile=tuning.get('profile', 'default'), mtu=tuning.get('mtu', state['mtu']),
+    profile = tuning.get('profile', 'default')
+    if profile not in {'default', 'custom', *PROFILES, *state.get('connectionPresets', {})}:
+        profile = 'custom'
+    return dict(profile=profile, mtu=tuning.get('mtu', state['mtu']),
                 keepalive=tuning.get('keepalive', 25), dns=tuning.get('dns') or state['dns'])
 
 
-def set_tuning(client, body):
+def normalize_dns(value, required=False):
+    raw = str(value).strip()
+    if not raw and not required:
+        return ''
+    addresses = [str(ipaddress.ip_address(x.strip())) for x in raw.split(',')]
+    if not 1 <= len(addresses) <= 3:
+        raise ValueError('Provide one to three DNS addresses.')
+    return ', '.join(addresses)
+
+
+def set_tuning(client, body, state=None):
     profile = body.get('profile', 'default')
     if profile == 'default':
-        client.pop('tuning', None)
+        dns = normalize_dns(body.get('dns', ''))
+        if dns:
+            client['tuning'] = dict(profile='default', dns=dns)
+        else:
+            client.pop('tuning', None)
         return
     if profile == 'custom':
         mtu, keepalive = int(body['mtu']), int(body['keepalive'])
-    elif profile in PROFILES:
-        mtu, keepalive = PROFILES[profile]['mtu'], PROFILES[profile]['keepalive']
+    elif profile in {**PROFILES, **(state or {}).get('connectionPresets', {})}:
+        selected = {**PROFILES, **(state or {}).get('connectionPresets', {})}[profile]
+        mtu, keepalive = selected['mtu'], selected['keepalive']
     else:
         raise ValueError('Unknown network profile.')
     if not 1280 <= mtu <= 1420 or not 0 <= keepalive <= 120:
         raise ValueError('MTU must be 1280–1420; keepalive must be 0–120 seconds.')
-    raw_dns = str(body.get('dns', '')).strip()
-    dns = ', '.join(str(ipaddress.ip_address(x.strip())) for x in raw_dns.split(',')) if raw_dns else ''
-    if dns and len(dns.split(',')) > 3:
-        raise ValueError('Provide at most three DNS addresses.')
+    dns = normalize_dns(body.get('dns', ''))
     client['tuning'] = dict(profile=profile, mtu=mtu, keepalive=keepalive, dns=dns)
+
+
+def manage_preset(state, body):
+    kind = body.get('kind')
+    if kind not in ('connection', 'dns'):
+        raise ValueError('Choose a connection or DNS preset.')
+    presets = state.setdefault(kind + 'Presets', {})
+    if body.get('action') == 'delete':
+        key = body.get('id')
+        if key not in presets:
+            raise ValueError('Saved preset not found.')
+        del presets[key]
+        return
+    if body.get('action') != 'save':
+        raise ValueError('Unknown preset action.')
+    name = str(body.get('name', '')).strip()
+    if not re.fullmatch(r'[A-Za-z0-9 _-]{1,40}', name):
+        raise ValueError('Preset names need 1–40 letters, numbers, spaces, underscores or hyphens.')
+    key = next((key for key, value in presets.items() if value['label'].lower() == name.lower()), None)
+    if key is None and len(presets) >= 50:
+        raise ValueError('Limit of 50 saved presets reached.')
+    key = key or 'saved-' + secrets.token_hex(8)
+    if kind == 'dns':
+        value = dict(label=name, dns=normalize_dns(body.get('dns', ''), required=True))
+    else:
+        mtu, keepalive = int(body['mtu']), int(body['keepalive'])
+        if not 1280 <= mtu <= 1420 or not 0 <= keepalive <= 120:
+            raise ValueError('MTU must be 1280–1420; keepalive must be 0–120.')
+        value = dict(label=name, mtu=mtu, keepalive=keepalive)
+    presets[key] = value
+
+
+def share_uri(state, client):
+    tuning = effective_tuning(state, client)
+    query = urlencode(dict(publickey=state['serverPublic'], presharedkey=client['psk'],
+                           address=client['address'] + '/32', mtu=tuning['mtu'],
+                           dns=tuning['dns'].replace(' ', ''), reserved='0,0,0'), quote_via=quote)
+    return 'wireguard://' + quote(client['private'], safe='') + '@' + state['host'] + ':' + str(state['port']) + '?' + query + '#' + quote(client['name'], safe='')
+
+
+def xray_config(state, client):
+    tuning = effective_tuning(state, client)
+    dns = [x.strip() for x in tuning['dns'].split(',')]
+    return dict(log=dict(loglevel='warning'), dns=dict(servers=dns, queryStrategy='UseIPv4'),
+        inbounds=[dict(tag='socks', listen='127.0.0.1', port=10808, protocol='socks', settings=dict(auth='noauth', udp=True)),
+                  dict(tag='http', listen='127.0.0.1', port=10809, protocol='http', settings={})],
+        outbounds=[dict(tag='proxy', protocol='wireguard', settings=dict(secretKey=client['private'],
+            address=[client['address'] + '/32'], mtu=tuning['mtu'], noKernelTun=True,
+            remoteDNS=dns, peers=[dict(endpoint=state['host'] + ':' + str(state['port']),
+                publicKey=state['serverPublic'], preSharedKey=client['psk'], keepAlive=tuning['keepalive'], allowedIPs=['0.0.0.0/0'])])),
+            dict(tag='block', protocol='blackhole', settings={})],
+        routing=dict(domainStrategy='AsIs', rules=[dict(type='field', ip=['::/0'], outboundTag='block')]))
 
 
 def make_server(host='0.0.0.0', port=8787):
@@ -304,14 +377,20 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     error = 'WireGuard is unavailable. Check sudo systemctl status wg-quick@wgauto0.'
                 return self.send(200, dict(host=state['host'], port=state['port'], dns=state['dns'], mtu=state['mtu'],
-                    profiles=PROFILES,
+                    profiles={**PROFILES, **state.get('connectionPresets', {})},
+                    connectionPresets=state.get('connectionPresets', {}),
+                    dnsPresets={**DNS_PRESETS, **state.get('dnsPresets', {})}, savedDnsPresets=state.get('dnsPresets', {}),
                     listenPort=fields(state['header'])['ListenPort'], error=error,
                     version=Path(__file__).with_name('VERSION').read_text().strip(),
                     unmanaged=len(state['unmanaged']), clients=[dict(id=c['id'], name=c['name'], address=c['address'], tuning=effective_tuning(state, c), dnsOverride=c.get('tuning', {}).get('dns', ''), **peers.get(c['public'], {})) for c in state['clients']]))
-            match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/config', self.path)
+            match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/(config|uri|xray)', self.path)
             if match:
                 c = next((c for c in state['clients'] if c['id'] == match[1]), None)
                 if c:
+                    if match[2] == 'uri':
+                        return self.send(200, share_uri(state, c) + '\n', 'text/plain', c['name'] + '-v2ray.txt')
+                    if match[2] == 'xray':
+                        return self.send(200, json.dumps(xray_config(state, c), indent=2), 'application/json', c['name'] + '-xray.json')
                     return self.send(200, client_config(state, c), 'text/plain', c['name'] + '.conf')
             self.send(404, {'error': 'Not found'})
         except Exception:
@@ -343,7 +422,10 @@ class Handler(BaseHTTPRequestHandler):
                 client = next((c for c in state['clients'] if c['id'] == tuning_match[1]), None)
                 if not client:
                     raise ValueError('Client not found.')
-                set_tuning(client, body)
+                set_tuning(client, body, state)
+                atomic(ROOT / 'state.json', json.dumps(state))
+            elif self.path == '/api/presets':
+                manage_preset(state, body)
                 atomic(ROOT / 'state.json', json.dumps(state))
             elif self.path == '/api/settings':
                 settings(state, body)

@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from urllib.parse import urlsplit, parse_qs, unquote
 
 import panel
 
@@ -164,6 +165,75 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(self.request(path, {'profile': 'idle'}).status, 200)
         config = self.request('/api/clients/0123456789abcdef/config').read().decode()
         self.assertIn('PersistentKeepalive = 0', config)
+
+    def test_saved_presets_apply_as_snapshots_and_survive_delete(self):
+        connection = dict(kind='connection', action='save', name='My LTE', mtu=1320, keepalive=15)
+        self.assertEqual(self.request('/api/presets', connection).status, 200)
+        key = next(iter(panel.load()['connectionPresets']))
+        dns = dict(kind='dns', action='save', name='My DNS', dns='9.9.9.9,1.1.1.1')
+        self.assertEqual(self.request('/api/presets', dns).status, 200)
+        normalized = next(iter(panel.load()['dnsPresets'].values()))['dns']
+        self.assertEqual(normalized, '9.9.9.9, 1.1.1.1')
+        path = '/api/clients/0123456789abcdef/tuning'
+        self.assertEqual(self.request(path, dict(profile=key, dns=normalized)).status, 200)
+        original = self.request('/api/clients/0123456789abcdef/config').read()
+        connection['mtu'] = 1400
+        self.assertEqual(self.request('/api/presets', connection).status, 200)
+        self.assertEqual(len(panel.load()['connectionPresets']), 1)
+        self.assertEqual(self.request('/api/clients/0123456789abcdef/config').read(), original)
+        self.assertEqual(self.request('/api/presets', dict(kind='connection', action='delete', id=key)).status, 200)
+        self.assertEqual(self.request('/api/clients/0123456789abcdef/config').read(), original)
+        status = json.load(self.request('/api/status'))
+        self.assertEqual(status['clients'][0]['tuning']['profile'], 'custom')
+        self.assertIn('quad9', status['dnsPresets'])
+
+    def test_default_connection_can_have_independent_dns(self):
+        self.assertEqual(self.request('/api/clients/0123456789abcdef/tuning', dict(profile='default', dns='9.9.9.9')).status, 200)
+        state = panel.load()
+        state['mtu'] = 1390
+        config = panel.client_config(state, state['clients'][0])
+        self.assertIn('MTU = 1390', config)
+        self.assertIn('DNS = 9.9.9.9', config)
+
+    def test_presets_validate_and_require_auth(self):
+        body = dict(kind='dns', action='save', name='test', dns='1.1.1.1')
+        self.assertEqual(self.request('/api/presets', body, auth=False).status, 401)
+        self.assertEqual(self.request('/api/presets', body, csrf=False).status, 403)
+        for bad in [dict(body, dns='not-an-ip'), dict(body, name='bad\nname'), dict(body, kind='invalid'),
+                    dict(kind='connection', action='save', name='bad', mtu=9000, keepalive=25)]:
+            self.assertEqual(self.request('/api/presets', bad).status, 400)
+
+    def test_v2ray_uri_and_xray_exports_use_tuned_settings(self):
+        state = panel.load()
+        c = state['clients'][0]
+        c['private'] = base64.b64encode(bytes([251]) * 32).decode()
+        c['psk'] = base64.b64encode(bytes([255]) * 32).decode()
+        panel.atomic(panel.ROOT / 'state.json', json.dumps(state))
+        path = '/api/clients/0123456789abcdef/'
+        self.assertEqual(self.request(path + 'uri', auth=False).status, 401)
+        self.assertEqual(self.request(path + 'xray', auth=False).status, 401)
+        self.assertEqual(self.request(path + 'tuning', dict(profile='custom', mtu=1320, keepalive=15, dns='9.9.9.9')).status, 200)
+        uri_response = self.request(path + 'uri')
+        self.assertEqual(uri_response.headers['Cache-Control'], 'no-store')
+        uri = urlsplit(uri_response.read().decode().strip())
+        self.assertEqual(uri.scheme, 'wireguard')
+        self.assertEqual(unquote(uri.username), c['private'])
+        self.assertEqual(uri.hostname, state['host'])
+        self.assertEqual(uri.port, state['port'])
+        query = parse_qs(uri.query)
+        self.assertEqual(query['presharedkey'], [c['psk']])
+        self.assertEqual(query['publickey'], [state['serverPublic']])
+        self.assertEqual(query['mtu'], ['1320'])
+        self.assertEqual(query['dns'], ['9.9.9.9'])
+        config = json.load(self.request(path + 'xray'))
+        settings = config['outbounds'][0]['settings']
+        self.assertEqual(settings['secretKey'], c['private'])
+        self.assertEqual(settings['mtu'], 1320)
+        self.assertEqual(settings['remoteDNS'], ['9.9.9.9'])
+        self.assertEqual(settings['peers'][0]['keepAlive'], 15)
+        self.assertEqual(settings['peers'][0]['preSharedKey'], c['psk'])
+        self.assertEqual(config['inbounds'][0]['listen'], '127.0.0.1')
+        self.assertEqual(config['routing']['rules'][0]['outboundTag'], 'block')
 
     def test_upgrade_imports_original_client_without_losing_other_peers(self):
         (panel.ROOT / 'state.json').unlink()

@@ -11,6 +11,24 @@ Panel features:
 - Change the advertised endpoint hostname/IP, advertised port, DNS and MTU for client exports.
 - Install project updates with a button or `sudo wg-auto-update`.
 - Tune each client separately with connection profiles, custom MTU/keepalive and optional DNS overrides.
+- Save, edit and delete reusable connection and DNS presets; built-in DNS choices include Cloudflare, Google and Quad9.
+- Export native WireGuard configs, v2rayN/v2rayNG WireGuard links, or full Xray custom JSON configurations.
+
+### Reusable presets
+
+Use **Saved presets** to create a named connection preset (MTU and keepalive) or DNS preset (one to three IP addresses). Saving the same name updates that preset. Select it in a client's **Network profile**, then save the client and re-import its configuration. Connection and DNS selections are independent: a client can inherit the default MTU while using its own DNS preset. Saving or deleting a preset does not alter clients that already used it; settings are copied when explicitly applied. Existing clients and saved presets survive project updates. Deleting a connection preset keeps the applied values on clients as custom settings.
+
+### v2rayN and v2rayNG exports
+
+Each client has **Copy v2ray link**, **v2ray link file**, and **Xray JSON** actions in addition to the native `.conf` download.
+
+- For a recent v2rayN or v2rayNG, copy the `wireguard://` link and use the app's import-from-clipboard action. If using the text download, copy its contents rather than the authenticated panel download URL.
+- For full configuration import, download **Xray JSON**, import it as a custom configuration, and select the Xray core. This is a complete JSON config, not an outbound fragment. It uses loopback SOCKS port 10808 with UDP enabled and HTTP port 10809; change these local ports if another program is using them. Enable the client's VPN/TUN or system proxy as appropriate to route application traffic.
+- Link exports carry the selected DNS, MTU, client address, keys and server endpoint. The current client URI parsers do not expose persistent keepalive, so use JSON or native WireGuard if retaining this setting is required. Full JSON retains `keepAlive` and uses Xray's userspace WireGuard outbound. App-side settings may affect routing or imported fields.
+- These are alternative ways to use the same WireGuard server, not VLESS/VMess conversions or obfuscation. IPv6 internet remains unavailable; JSON explicitly blocks IPv6 destinations. Create a separate client for each device, and do not run multiple apps simultaneously with the same client keys.
+- Links and JSON contain private client credentials. They require panel login, are served with `Cache-Control: no-store`, and should not be published.
+
+Format references: [v2rayN WireGuard parser](https://github.com/2dust/v2rayN/blob/master/v2rayN/ServiceLib/Handler/Fmt/WireguardFmt.cs), [v2rayNG WireGuard parser](https://github.com/2dust/v2rayNG/blob/master/V2rayNG/app/src/main/java/com/v2ray/ang/fmt/WireguardFmt.kt), [Xray WireGuard outbound](https://xtls.github.io/en/config/outbounds/wireguard.html). Compatibility is based on these current formats; mobile/desktop GUI imports and end-to-end connectivity still need testing on the user's app versions.
 
 ### Per-client network settings
 
