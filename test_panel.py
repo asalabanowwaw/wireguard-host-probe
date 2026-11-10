@@ -17,6 +17,25 @@ from urllib.parse import urlsplit, parse_qs, unquote
 import panel
 
 
+class DnsCatalogTests(unittest.TestCase):
+    def test_catalog_metadata_and_addresses(self):
+        import ipaddress
+        self.assertGreaterEqual(len(panel.DNS_PRESETS), 30)
+        for key, preset in panel.DNS_PRESETS.items():
+            with self.subTest(key=key):
+                self.assertIn(preset['region'], ('Iran', 'Global'))
+                self.assertTrue(preset['source'].startswith('https://'))
+                self.assertTrue(preset['category'])
+                addresses = [ipaddress.ip_address(ip.strip()) for ip in preset['dns'].split(',')]
+                self.assertTrue(1 <= len(addresses) <= 3)
+                self.assertTrue(all(ip.version == 4 for ip in addresses))
+                if any(ip.is_private for ip in addresses):
+                    self.assertEqual(preset['category'], 'Network-only')
+                    self.assertIn('foreign VPS', preset['note'])
+        self.assertEqual(panel.DNS_PRESETS['cloudflare']['dns'], '1.1.1.1, 1.0.0.1')
+        self.assertEqual(panel.DNS_PRESETS['shecan']['dns'], '178.22.122.100, 185.51.200.2')
+
+
 class PanelTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

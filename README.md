@@ -182,3 +182,10 @@ Local console-only check: `npm run check`.
 ### MTU below 1280
 
 Custom client settings, defaults and saved presets accept MTU 576?1420. The Small packets preset uses 1200. Below 1280, native `.conf` exports include only the IPv4 default route and a warning: IPv6 is not captured and can bypass the VPN unless disabled or blocked on the client. This follows IPv6's minimum link MTU of 1280 (RFC 8200). Existing configurations at 1280 or above retain their original routes. Xray JSON continues to block IPv6 destinations regardless of MTU; share-link routing depends on the importing application. The local tuner accepts low-MTU files and includes the imported MTU in its trials. Low values are diagnostic options, not guaranteed performance improvements.
+
+
+### DNS explorer
+
+The panel includes 34 curated IPv4 DNS profiles: 9 Iranian options and 25 global options, with region/purpose filters, provider source links, and a confirmed action to change panel defaults. Each profile is also selectable in a device's Network profile & DNS. Save device settings, then download and re-import the configuration. Existing DNS values are preserved during updates.
+
+Iranian options include Shecan, Begzar, and explicitly marked community/legacy entries (Electro, 403, Radar, Shelter, Beshkan, Pishgaman, Shatel). Community-listed entries are not provider-verified or live-tested. Private 10.x resolvers require an appropriate Iranian network route and normally cannot be used through a foreign VPS. Global choices cover Cloudflare, Google, Quad9, AdGuard, CleanBrowsing, Control D, OpenDNS, Yandex and DNS.SB, including filtering variants. Filtering can deliberately block domains; DNS changes do not repair packet loss or guarantee VPN stability. Custom presets still accept one to three IP addresses. Catalog sources are linked in each card; documented addresses are not availability guarantees.
