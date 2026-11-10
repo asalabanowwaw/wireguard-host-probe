@@ -58,6 +58,22 @@ class LocalTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 local_app.export_data('config')
 
+    def test_changed_keys_have_different_report_identity(self):
+        imported = fixture()
+        with patch.object(local_app, 'IMPORTED', imported):
+            before = local_app.summary()
+            imported['client']['private'] = base64.b64encode(bytes([250]) * 32).decode()
+            after = local_app.summary()
+        self.assertNotEqual(before['profileId'], after['profileId'])
+        self.assertEqual(before['address'], after['address'])
+        self.assertEqual(before['host'], after['host'])
+
+    def test_baseline_is_not_claimed_as_imported_tunnel_success(self):
+        with patch.object(local_app, 'IMPORTED', fixture()), patch.object(local_app, 'curl_probe', return_value=dict(ok=True, text='198.51.100.2')):
+            report = local_app.preflight()
+        self.assertFalse(report['proxyExitMatchesEndpoint'])
+        self.assertIn('do not test the imported', report['note'])
+
 
 class LocalHttpTests(unittest.TestCase):
     def setUp(self):

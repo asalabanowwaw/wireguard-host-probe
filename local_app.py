@@ -3,6 +3,7 @@
 import argparse
 import base64
 import copy
+import hashlib
 import ipaddress
 import json
 import os
@@ -100,7 +101,10 @@ def summary():
     if not IMPORTED:
         return None
     return dict(host=IMPORTED['state']['host'], port=IMPORTED['state']['port'],
-                address=IMPORTED['client']['address'], mtu=IMPORTED['client']['tuning']['mtu'])
+                address=IMPORTED['client']['address'], mtu=IMPORTED['client']['tuning']['mtu'],
+                profileId=hashlib.sha256(json.dumps([IMPORTED['state']['host'], IMPORTED['state']['port'],
+                    IMPORTED['state']['serverPublic'], IMPORTED['client']['private'],
+                    IMPORTED['client']['psk'], IMPORTED['client']['address']]).encode()).hexdigest())
 
 
 def curl_probe(url, proxy=None, timeout=10, download=False, connect_timeout=8):
@@ -132,8 +136,10 @@ def curl_probe(url, proxy=None, timeout=10, download=False, connect_timeout=8):
 def preflight():
     direct = curl_probe('https://api.ipify.org')
     proxy = curl_probe('https://api.ipify.org', proxy=10809)
-    return dict(direct=direct, existingProxy=proxy,
-                note='The proxy test uses v2rayN HTTP port 10809. A different local port may be configured. Direct tests bypass the system HTTP proxy but still follow any active TUN/VPN routes.')
+    endpoint = IMPORTED['state']['host'] if IMPORTED else None
+    return dict(direct=direct, existingProxy=proxy, importedEndpoint=endpoint,
+                proxyExitMatchesEndpoint=proxy['text'].strip() == endpoint if endpoint and proxy['ok'] else None,
+                note='These baseline checks do not test the imported WireGuard client. The proxy test uses whichever profile is currently serving HTTP port 10809. Use the full trial for the imported client. Direct tests bypass the system HTTP proxy but still follow active TUN/VPN routes.')
 
 
 def free_port():
