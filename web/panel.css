@@ -40,3 +40,18 @@ main{margin-left:246px;padding:30px 36px 0;max-width:1900px}.topbar{margin-botto
 
 /* Blue Knight navigation: scrolling stays available without a visible sidebar rail. */
 .sidebar{scrollbar-width:none}.sidebar::-webkit-scrollbar{display:none}.brand{font-size:27px;letter-spacing:2px}.channel-links{display:flex;gap:15px;justify-content:center;margin:16px 0;font:11px Manrope,sans-serif}.channel-links a{color:#e0c9e8;text-decoration:none}*{scrollbar-width:thin;scrollbar-color:var(--ornament) var(--field)}::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-track{background:var(--field);border-radius:20px}::-webkit-scrollbar-thumb{background:var(--ornament);border:2px solid var(--field);border-radius:20px}@media(max-height:850px) and (min-width:901px){.sidebar{padding-top:18px;padding-bottom:14px}.brand{margin-bottom:12px;gap:3px}.brand-mark{height:40px}.brand-mark:before{font-size:40px}.side-note{display:none}.sidebar-bottom{padding-top:12px}.nav-label{margin-top:15px}.nav-item{min-height:40px}.build{margin-top:10px}}
+
+:root[data-theme=spring]{--bg:#faeee8;--surface:#fff5ef;--surface-up:#f5ddd8;--field:#fff7f2;--line:#d8b4aa;--text:#49282c;--muted:#785056;--subtle:#805c60;--pink:#b94759;--pink-dark:#f3d0cd;--purple:#ba5967;--edge:#cd9f94;--button-top:#dd7881;--button-bottom:#a44350;--button-text:#fff;--hero-image:url('data:image/webp;base64,__THEME_SPRING__')}
+
+:root[data-theme=horror]{--bg:#10090e;--surface:#211318;--surface-up:#321a22;--field:#160b10;--line:#75404b;--text:#ffe8ec;--muted:#e2b8c0;--subtle:#cc9ca7;--pink:#fa526b;--pink-dark:#491c29;--purple:#ee4968;--edge:#a84b5c;--button-top:#a41c30;--button-bottom:#590b18;--button-text:#fff;--hero-image:url('data:image/webp;base64,__THEME_HORROR__')}
+
+:root[data-theme=cute]{--bg:#faeee8;--surface:#fff5ef;--surface-up:#f5ddd8;--field:#fff7f2;--line:#d8b4aa;--text:#49282c;--muted:#785056;--subtle:#805c60;--pink:#b94759;--pink-dark:#f3d0cd;--purple:#ba5967;--edge:#cd9f94;--button-top:#dd7881;--button-bottom:#a44350;--button-text:#fff;--hero-image:url('data:image/webp;base64,__THEME_CUTE__')}
+
+:root[data-theme=festival]{--bg:#faeee8;--surface:#fff5ef;--surface-up:#f5ddd8;--field:#fff7f2;--line:#d8b4aa;--text:#49282c;--muted:#785056;--subtle:#805c60;--pink:#b94759;--pink-dark:#f3d0cd;--purple:#ba5967;--edge:#cd9f94;--button-top:#dd7881;--button-bottom:#a44350;--button-text:#fff;--hero-image:url('data:image/webp;base64,__THEME_FESTIVAL__')}
+
+:root[data-theme=gothic]{--bg:#10090e;--surface:#211318;--surface-up:#321a22;--field:#160b10;--line:#75404b;--text:#ffe8ec;--muted:#e2b8c0;--subtle:#cc9ca7;--pink:#fa526b;--purple:#ee4968;--edge:#a84b5c;--button-top:#a41c30;--button-bottom:#590b18;--button-text:#fff;--hero-image:url('data:image/webp;base64,__THEME_HORROR__')}
+
+:root:is([data-theme=spring],[data-theme=cute],[data-theme=festival]){color-scheme:light}
+:root:is([data-theme=horror],[data-theme=gothic]){color-scheme:dark}
+:root:is([data-theme=spring],[data-theme=cute],[data-theme=festival]) .hero{background-image:linear-gradient(90deg,var(--bg),transparent 85%),var(--hero-image)}
+@media(max-width:600px){:root:is([data-theme=spring],[data-theme=cute],[data-theme=festival]) .hero{background-image:linear-gradient(180deg,var(--bg),transparent 90%),var(--hero-image)}}

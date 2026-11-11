@@ -12,6 +12,8 @@ for token, filename in [('__MANROPE_FONT__', 'manrope.woff2'), ('__CORMORANT_FON
     page = page.replace(token, base64.b64encode((ROOT / 'assets/fonts' / filename).read_bytes()).decode())
 for token, filename in [('__DARK_ART__', 'rose-moon-dark.webp'), ('__LIGHT_ART__', 'rose-moon-light.webp')]:
     page = page.replace(token, base64.b64encode((ROOT / 'assets' / filename).read_bytes()).decode())
+for name in ['spring','horror','cute','festival']:
+    page = page.replace('__THEME_'+name.upper()+'__', base64.b64encode((ROOT / 'assets' / ('theme-'+name+'.webp')).read_bytes()).decode())
 (ROOT / 'panel.html').write_text(page, encoding='utf-8')
 print('Bundled panel.html with local artwork; no third-party CDN requests.')
 
