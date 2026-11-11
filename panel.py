@@ -855,6 +855,15 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise ValueError('JSON object required.')
             protocol = self.route_protocol()
+            if self.path == '/api/password':
+                current, password = body.get('current'), body.get('password')
+                if not isinstance(current, str) or not hmac.compare_digest(current.encode(), (ROOT / 'password').read_text().strip().encode()):
+                    return self.send(403, {'error': 'Current password is incorrect.'})
+                if not isinstance(password, str) or not 12 <= len(password) <= 200 or any(ord(c) < 32 or ord(c) == 127 for c in password) or password != password.strip():
+                    raise ValueError('Use 12-200 characters without control characters or surrounding spaces.')
+                atomic(ROOT / 'password', password + '\n')
+                audit('Changed panel password')
+                return self.send(200, {'ok': True})
             if self.path == '/api/awg-install':
                 if protocol != 'wireguard':
                     raise ValueError('Invalid install route.')

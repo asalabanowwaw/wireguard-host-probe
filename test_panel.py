@@ -394,6 +394,15 @@ class PanelTests(unittest.TestCase):
         panel.initialize()
         self.assertEqual(panel.load()['clients'], [])
 
+    def test_password_change_checks_current_and_replaces_credentials(self):
+        self.assertEqual(self.request('/api/password', {'current':'wrong','password':'a-new-password-123'}).status, 403)
+        self.assertEqual(self.request('/api/password', {'current':'test-password','password':'short'}).status, 400)
+        self.assertEqual(self.request('/api/password', {'current':'test-password','password':'a-new-password-123'}).status, 200)
+        self.assertEqual((panel.ROOT / 'password').read_text().strip(), 'a-new-password-123')
+        self.assertEqual(self.request('/api/status').status, 401)
+        request = Request(self.base + '/api/status', headers={'Authorization':'Basic ' + base64.b64encode(b'admin:a-new-password-123').decode()})
+        self.assertEqual(urlopen(request).status, 200)
+
     def prepare_awg(self):
         state = json.loads(json.dumps(self.state))
         state.update(protocol='amneziawg', port=51821, network='10.204.240.0/24')
