@@ -37,35 +37,35 @@ METRICS_LOCK = threading.Lock()
 PEER_SAMPLES = {}
 TRAFFIC_HISTORY = []
 PROFILES = {
-    'small': dict(label='Small packets — IPv4 only', mtu=1200, keepalive=25),
-    'compatible': dict(label='Compatibility — smaller packets', mtu=1280, keepalive=25),
-    'balanced': dict(label='Balanced — try on stable connections', mtu=1360, keepalive=25),
-    'large': dict(label='Larger packets — test before using', mtu=1420, keepalive=25),
-    'idle': dict(label='Less idle traffic — keepalive disabled', mtu=1280, keepalive=0),
+    'small': dict(label='Small packets أ¢â‚¬â€‌ IPv4 only', mtu=1200, keepalive=25),
+    'compatible': dict(label='Compatibility أ¢â‚¬â€‌ smaller packets', mtu=1280, keepalive=25),
+    'balanced': dict(label='Balanced أ¢â‚¬â€‌ try on stable connections', mtu=1360, keepalive=25),
+    'large': dict(label='Larger packets أ¢â‚¬â€‌ test before using', mtu=1420, keepalive=25),
+    'idle': dict(label='Less idle traffic أ¢â‚¬â€‌ keepalive disabled', mtu=1280, keepalive=0),
 }
 # Curated IPv4 catalog; documentation is not a live reachability guarantee.
-DNS_PRESETS = {'shecan': {'label': 'Shecan / شکن',
+DNS_PRESETS = {'shecan': {'label': 'Shecan / ط·آ´ط¹آ©ط¸â€ ',
             'dns': '178.22.122.100, 185.51.200.2',
             'region': 'Iran',
             'category': 'Anti-sanction',
             'source': 'https://t.me/s/shecan_ir',
             'note': 'Access can depend on source IP; test through your VPN.',
             'verification': 'Provider documented'},
- 'begzar': {'label': 'Begzar / بگذر',
+ 'begzar': {'label': 'Begzar / ط·آ¨ط¹آ¯ط·آ°ط·آ±',
             'dns': '185.55.226.26, 185.55.225.25, 185.55.224.24',
             'region': 'Iran',
             'category': 'Anti-sanction',
             'source': 'https://begzar.ir/',
             'note': 'For supported services; availability from a foreign VPS may differ.',
             'verification': 'Provider documented'},
- 'electro': {'label': 'Electro / الکترو',
+ 'electro': {'label': 'Electro / ط·آ§ط¸â€‍ط¹آ©ط·ع¾ط·آ±ط¸ث†',
              'dns': '78.157.42.100, 78.157.42.101',
              'region': 'Iran',
              'category': 'Anti-sanction',
              'source': 'https://github.com/roozysoft/DNSs',
              'note': 'Legacy DNS addresses. Current service availability is unconfirmed.',
              'verification': 'Community listed / unverified'},
- '403': {'label': '403 / ۴۰۳',
+ '403': {'label': '403 / ط؛آ´ط؛آ°ط؛آ³',
          'dns': '10.202.10.202, 10.202.10.102',
          'region': 'Iran',
          'category': 'Network-only',
@@ -73,7 +73,7 @@ DNS_PRESETS = {'shecan': {'label': 'Shecan / شکن',
          'note': 'Private addresses: normally unreachable from a foreign VPS; requires a compatible Iranian '
                  'network route.',
          'verification': 'Community listed / unverified'},
- 'radar': {'label': 'Radar / رادار',
+ 'radar': {'label': 'Radar / ط·آ±ط·آ§ط·آ¯ط·آ§ط·آ±',
            'dns': '10.202.10.10, 10.202.10.11',
            'region': 'Iran',
            'category': 'Network-only',
@@ -81,28 +81,28 @@ DNS_PRESETS = {'shecan': {'label': 'Shecan / شکن',
            'note': 'Private addresses: normally unreachable from a foreign VPS; requires a compatible '
                    'Iranian network route.',
            'verification': 'Community listed / unverified'},
- 'shelter': {'label': 'Shelter / شلتر',
+ 'shelter': {'label': 'Shelter / ط·آ´ط¸â€‍ط·ع¾ط·آ±',
              'dns': '94.103.125.157, 94.103.125.158',
              'region': 'Iran',
              'category': 'Anti-sanction',
              'source': 'https://github.com/roozysoft/DNSs',
              'note': 'Provider documentation and current availability not confirmed.',
              'verification': 'Community listed / unverified'},
- 'beshkan': {'label': 'Beshkan / بشکن',
+ 'beshkan': {'label': 'Beshkan / ط·آ¨ط·آ´ط¹آ©ط¸â€ ',
              'dns': '181.41.194.177, 181.41.194.186',
              'region': 'Iran',
              'category': 'Anti-sanction',
              'source': 'https://github.com/roozysoft/DNSs',
              'note': 'Provider documentation and current availability not confirmed.',
              'verification': 'Community listed / unverified'},
- 'pishgaman': {'label': 'Pishgaman / پیشگامان',
+ 'pishgaman': {'label': 'Pishgaman / ط¸آ¾ط؛إ’ط·آ´ط¹آ¯ط·آ§ط¸â€¦ط·آ§ط¸â€ ',
                'dns': '5.202.100.100, 5.202.100.101',
                'region': 'Iran',
                'category': 'ISP',
                'source': 'https://github.com/roozysoft/DNSs',
                'note': 'May restrict clients by network. Public access is not confirmed.',
                'verification': 'Community listed / unverified'},
- 'shatel': {'label': 'Shatel / شاتل',
+ 'shatel': {'label': 'Shatel / ط·آ´ط·آ§ط·ع¾ط¸â€‍',
             'dns': '85.15.1.14, 85.15.1.15',
             'region': 'Iran',
             'category': 'ISP',
@@ -398,6 +398,17 @@ def sync(text, state=None):
         stripped = run(quick, 'strip', name)
         Path(name).write_text(stripped)
         run(command, 'syncconf', iface, name)
+        # Explicitly remove retired keys: do not rely on a protocol engine's
+        # syncconf implementation to invalidate existing sessions.
+        desired = {fields(block).get('PublicKey') for block in text.split('[Peer]')[1:]}
+        previous = engine(state or {})[3].read_text()
+        retired = {fields(block).get('PublicKey') for block in previous.split('[Peer]')[1:]} - desired
+        live = set(run(command, 'show', iface, 'peers').split())
+        for public in (retired | (live - desired)) - {None, ''}:
+            run(command, 'set', iface, 'peer', public, 'remove')
+        if set(run(command, 'show', iface, 'peers').split()) - desired:
+            raise RuntimeError('VPN peer removal could not be verified.')
+
     finally:
         os.unlink(name)
 
@@ -481,7 +492,7 @@ def set_tuning(client, body, state=None):
     else:
         raise ValueError('Unknown network profile.')
     if not 576 <= mtu <= 1420 or not 0 <= keepalive <= 120:
-        raise ValueError('MTU must be 1280–1420; keepalive must be 0–120 seconds.')
+        raise ValueError('MTU must be 1280أ¢â‚¬â€œ1420; keepalive must be 0أ¢â‚¬â€œ120 seconds.')
     dns = normalize_dns(body.get('dns', ''))
     client['tuning'] = dict(profile=profile, mtu=mtu, keepalive=keepalive, dns=dns)
 
@@ -501,7 +512,7 @@ def manage_preset(state, body):
         raise ValueError('Unknown preset action.')
     name = str(body.get('name', '')).strip()
     if not re.fullmatch(r'[A-Za-z0-9 _-]{1,40}', name):
-        raise ValueError('Preset names need 1–40 letters, numbers, spaces, underscores or hyphens.')
+        raise ValueError('Preset names need 1أ¢â‚¬â€œ40 letters, numbers, spaces, underscores or hyphens.')
     key = next((key for key, value in presets.items() if value['label'].lower() == name.lower()), None)
     if key is None and len(presets) >= 50:
         raise ValueError('Limit of 50 saved presets reached.')
@@ -511,7 +522,7 @@ def manage_preset(state, body):
     else:
         mtu, keepalive = int(body['mtu']), int(body['keepalive'])
         if not 576 <= mtu <= 1420 or not 0 <= keepalive <= 120:
-            raise ValueError('MTU must be 1280–1420; keepalive must be 0–120.')
+            raise ValueError('MTU must be 1280أ¢â‚¬â€œ1420; keepalive must be 0أ¢â‚¬â€œ120.')
         value = dict(label=name, mtu=mtu, keepalive=keepalive)
     presets[key] = value
 
@@ -709,7 +720,7 @@ def settings(state, body):
             raise ValueError('Invalid hostname or IPv4 address.')
     port, mtu = int(body['port']), int(body['mtu'])
     if not 1 <= port <= 65535 or not 576 <= mtu <= 1420:
-        raise ValueError('Port must be 1–65535; MTU must be 1280–1420.')
+        raise ValueError('Port must be 1أ¢â‚¬â€œ65535; MTU must be 1280أ¢â‚¬â€œ1420.')
     dns = [str(ipaddress.ip_address(x.strip())) for x in str(body['dns']).split(',')]
     if not 1 <= len(dns) <= 3:
         raise ValueError('Provide one to three DNS IP addresses.')
@@ -903,7 +914,7 @@ class Handler(BaseHTTPRequestHandler):
                 if 'name' in body:
                     name = str(body['name']).strip()
                     if not re.fullmatch(r'[A-Za-z0-9_-]{1,40}', name):
-                        raise ValueError('Use 1–40 letters, numbers, underscores or hyphens.')
+                        raise ValueError('Use 1أ¢â‚¬â€œ40 letters, numbers, underscores or hyphens.')
                     if any(c['id'] != client['id'] and c['name'] == name for c in state['clients']):
                         raise ValueError('Client name already exists.')
                     client['name'] = name
@@ -919,7 +930,7 @@ class Handler(BaseHTTPRequestHandler):
                 ids = body.get('ids')
                 action = body.get('action')
                 if not isinstance(ids, list) or not 1 <= len(ids) <= 64 or action not in ('enable', 'disable'):
-                    raise ValueError('Select 1–64 clients and choose enable or disable.')
+                    raise ValueError('Select 1أ¢â‚¬â€œ64 clients and choose enable or disable.')
                 if any(not isinstance(item, str) for item in ids):
                     raise ValueError('Invalid client selection.')
                 selected = [c for c in state['clients'] if c['id'] in ids]
@@ -946,7 +957,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/api/clients':
                 name = str(body.get('name', '')).strip()
                 if not re.fullmatch(r'[A-Za-z0-9_-]{1,40}', name):
-                    raise ValueError('Use 1–40 letters, numbers, underscores or hyphens.')
+                    raise ValueError('Use 1أ¢â‚¬â€œ40 letters, numbers, underscores or hyphens.')
                 if any(c['name'] == name for c in state['clients']):
                     raise ValueError('Client name already exists.')
                 used = {c['address'] for c in state['clients']}
@@ -1009,6 +1020,13 @@ if __name__ == '__main__':
         initialize_awg()
         sys.exit(0)
     initialize()
+    if sys.argv[1:] == ['--reconcile-peers']:
+        for protocol in ('wireguard', 'amneziawg'):
+            if state_path({'protocol': protocol}).exists():
+                state = load(protocol)
+                save(state)
+                print(protocol + ': live peers reconciled with saved panel devices.')
+        sys.exit(0)
     server = make_server()
     server.timeout = 15
     server.socket.settimeout(15)

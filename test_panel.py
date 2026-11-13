@@ -427,6 +427,8 @@ class PanelTests(unittest.TestCase):
         def awg_run(*args, data=None):
             if args[0] == panel.AWG_BIN + 'awg':
                 self.commands.append(args)
+                if args[1] == 'show' and args[-1] == 'peers':
+                    return ''
                 if args[1] == 'show':
                     return 'private\tpublic\t51821\t4\t40\t700\toff\nclient-public\tshared\t(none)\t10.204.240.2/32\t0\t123\t456\t25'
                 return original('wg', *args[1:], data=data)
@@ -469,6 +471,34 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(panel.load('amneziawg')['clients'][0]['tuning']['dns'], '9.9.9.9')
         self.assertEqual(panel.CONFIG.read_bytes(), before_config)
         self.assertEqual(panel.state_path().read_bytes(), before_state)
+
+    def test_awg_revoke_explicitly_removes_live_peer(self):
+        self.prepare_awg()
+        normal = panel.run.side_effect
+        live = {'client-public'}
+        def running(*args, data=None):
+            if args == (panel.AWG_BIN + 'awg', 'show', 'awgauto0', 'peers'):
+                return '\n'.join(live)
+            if args == (panel.AWG_BIN + 'awg', 'set', 'awgauto0', 'peer', 'client-public', 'remove'):
+                live.clear()
+            return normal(*args, data=data)
+        panel.run.side_effect = running
+        self.assertEqual(self.request('/api/awg/revoke', {'id': '0123456789abcdef'}).status, 200)
+        self.assertFalse(live)
+        self.assertFalse(panel.load('amneziawg')['clients'])
+        self.assertNotIn('client-public', panel.AWG_CONFIG.read_text())
+        self.assertEqual(len(panel.load()['clients']), 1)
+
+    def test_awg_revoke_does_not_report_success_when_peer_remains(self):
+        self.prepare_awg()
+        normal = panel.run.side_effect
+        def stuck(*args, data=None):
+            if args == (panel.AWG_BIN + 'awg', 'show', 'awgauto0', 'peers'):
+                return 'client-public'
+            return normal(*args, data=data)
+        panel.run.side_effect = stuck
+        self.assertEqual(self.request('/api/awg/revoke', {'id': '0123456789abcdef'}).status, 500)
+        self.assertEqual(len(panel.load('amneziawg')['clients']), 1)
 
     def test_awg_sync_failure_rolls_back_only_awg(self):
         state = self.prepare_awg()
