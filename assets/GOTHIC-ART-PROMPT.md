@@ -1,1 +1,1 @@
-Current Gothic wallpaper: user-supplied image, installed without regeneration. Converted to WebP for the bundled dashboard.
+Built-in image_gen prompt: Wide 3:1 anime banner, adult Gothic hacker woman in black high-neck top, straps, chains and ripped jeans in purple computer room. Pull camera back; full head on right third with at least 15% headroom. Left 55% dark negative space. No text or UI.
