@@ -1,3 +1,3 @@
-Generated with built-in image_gen.
+Built-in image_gen; user reference composition.
 
-Prompt: Wide painterly anime environment of a moonlit Gothic cathedral library, pointed arches, silver moonlight, midnight teal shadows, antique gold details and violet stained glass. Architecture on the right, dark negative space on the left for UI text. Peaceful; no blood, red moon, people, text or logos.
+Wide Gothic portrait banner: adult woman in black/violet Victorian lace gown reclining on ornate chair on right, black cat, silver moon and misty Gothic castle, violet roses, antique silver details. Dark empty left half for live UI text. Painterly anime; no lettering, UI, red moon or blood lighting.
