@@ -11,6 +11,8 @@ import secrets
 import ssl
 import socket
 import sys
+import io
+import zipfile
 import subprocess
 import tempfile
 import time
@@ -808,12 +810,22 @@ class Handler(BaseHTTPRequestHandler):
                     listenPort=fields(state['header'])['ListenPort'], error=error,
                     version=Path(__file__).with_name('VERSION').read_text().strip(),
                     unmanaged=len(state['unmanaged']), **client_metrics(state, peers)))
-            match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/(config|uri|xray|compatible|qr\.svg)', self.path)
+            match = re.fullmatch(r'/api/clients/([a-f0-9]{16})/(config|dns.zip|uri|xray|compatible|qr\.svg)', self.path)
             if match:
                 c = next((c for c in state['clients'] if c['id'] == match[1]), None)
                 if c:
-                    if protocol == 'amneziawg' and match[2] not in ('config', 'qr.svg'):
+                    if protocol == 'amneziawg' and match[2] not in ('config', 'qr.svg', 'dns.zip'):
                         return self.send(400, {'error': 'AmneziaWG requires a compatible 3.1 app. Download its native config or QR.'})
+                    if match[2] == 'dns.zip':
+                        presets = {**DNS_PRESETS, **state.get('dnsPresets', {})}
+                        output = io.BytesIO()
+                        with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+                            for key, preset in presets.items():
+                                tag = re.sub(r'[^A-Za-z0-9_-]', '-', key)[:60]
+                                variant = dict(c, tuning={**c.get('tuning', {}), 'dns': preset['dns']})
+                                archive.writestr(tag + '-' + c['name'] + '.conf', '# DNS preset: ' + preset['label'] + '\n' + client_config(state, variant))
+                            archive.writestr('README.txt', 'These profiles share one client key. Activate only one at a time. DNS availability depends on the VPN exit network. Private Iranian resolvers may be unreachable from a foreign VPS.\n')
+                        return self.send(200, output.getvalue(), 'application/zip', c['name'] + '-all-dns.zip')
                     if match[2] == 'qr.svg':
                         try:
                             svg = run('qrencode', '-t', 'SVG', '-m', '2', data=client_config(state, c))

@@ -55,3 +55,12 @@ main{margin-left:246px;padding:30px 36px 0;max-width:1900px}.topbar{margin-botto
 :root:is([data-theme=horror],[data-theme=gothic]){color-scheme:dark}
 :root:is([data-theme=spring],[data-theme=cute],[data-theme=festival]) .hero{background-image:linear-gradient(90deg,var(--bg),transparent 85%),var(--hero-image)}
 @media(max-width:600px){:root:is([data-theme=spring],[data-theme=cute],[data-theme=festival]) .hero{background-image:linear-gradient(180deg,var(--bg),transparent 90%),var(--hero-image)}}
+
+/* Gothic is a rose observatory; Horror is the separate blood-moon event. */
+:root[data-theme=gothic]{--bg:#160e18;--surface:#261b2a;--surface-up:#39273c;--field:#1c1320;--line:#81647d;--text:#f8ebf2;--muted:#dbc0d2;--subtle:#c4a5bc;--pink:#e5a1c3;--purple:#c69ddd;--edge:#a97f9b;--button-top:#92556f;--button-bottom:#542d49;--hero-image:url('data:image/webp;base64,__DARK_ART__')}
+
+.live-summary{display:flex;gap:16px;flex-wrap:wrap;border:1px solid var(--edge);border-radius:12px;padding:14px 18px;margin-bottom:20px;background:var(--surface);font:12px Manrope,sans-serif}.live-summary small{flex-basis:100%;color:var(--muted);line-height:1.6;font-size:10px}
+:root[data-theme=spring]{--sidebar:#592f43}:root[data-theme=cute]{--sidebar:#633f35}:root[data-theme=festival]{--sidebar:#702d31}:root[data-theme=horror]{--sidebar:#190a0e}:root[data-theme=gothic]{--sidebar:#291b2d}
+:root:is([data-theme=spring],[data-theme=cute],[data-theme=festival],[data-theme=horror],[data-theme=gothic]) .sidebar{background:var(--sidebar);border-color:var(--edge)}
+:root:is([data-theme=spring],[data-theme=cute],[data-theme=festival],[data-theme=horror],[data-theme=gothic]) .nav-item.active{background:linear-gradient(120deg,var(--button-top),var(--button-bottom));border-color:var(--edge)}
+:root:is([data-theme=spring],[data-theme=cute],[data-theme=festival],[data-theme=horror],[data-theme=gothic]) .protocol-picker select{background:var(--sidebar);border-color:var(--edge)}

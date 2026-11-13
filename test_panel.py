@@ -403,6 +403,17 @@ class PanelTests(unittest.TestCase):
         request = Request(self.base + '/api/status', headers={'Authorization':'Basic ' + base64.b64encode(b'admin:a-new-password-123').decode()})
         self.assertEqual(urlopen(request).status, 200)
 
+    def test_all_dns_zip_has_tagged_configs_without_changing_client(self):
+        import io, zipfile
+        before = panel.state_path().read_bytes()
+        response = self.request('/api/clients/0123456789abcdef/dns.zip')
+        self.assertEqual(response.status, 200)
+        with zipfile.ZipFile(io.BytesIO(response.read())) as archive:
+            self.assertIn('cloudflare-phone.conf', archive.namelist())
+            self.assertIn('DNS = 1.1.1.1, 1.0.0.1', archive.read('cloudflare-phone.conf').decode())
+            self.assertEqual(len([n for n in archive.namelist() if n.endswith('.conf')]), len(panel.DNS_PRESETS))
+        self.assertEqual(panel.state_path().read_bytes(), before)
+
     def prepare_awg(self):
         state = json.loads(json.dumps(self.state))
         state.update(protocol='amneziawg', port=51821, network='10.204.240.0/24')
