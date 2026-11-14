@@ -96,3 +96,7 @@ python -m unittest -q test_panel test_local_app
 ```
 
 UI sources are in `web/`; rebuild `panel.html` after editing them. See [UPSTREAM.md](UPSTREAM.md) for project background.
+
+## Device limits
+
+Open a device?s **Data limit & expiry** section to set a combined upload/download quota in GiB and an expiry date in your browser?s local time. Zero quota means unlimited; empty expiry means never. Usage is persisted and limits are checked every five seconds while the panel service runs, even with the browser closed. Exhausted or expired keys are removed from the live VPN. Extend the limit or reset usage to restore access; manual pauses remain paused. Small overshoot is possible between checks. Counters cannot recover traffic already lost before this version was installed or during a service outage.

@@ -95,6 +95,37 @@ class PanelTests(unittest.TestCase):
         except HTTPError as e:
             return e
 
+    def test_quota_accounting_survives_counter_reset_and_blocks_peer(self):
+        state = panel.load()
+        state['clients'][0]['quotaBytes'] = 150
+        normal = panel.run.side_effect
+        counter = [60, 40]
+        def traffic(*args, data=None):
+            if args == ('wg', 'show', 'wgauto0', 'transfer'):
+                return 'client-public ' + str(counter[0]) + ' ' + str(counter[1])
+            return normal(*args, data=data)
+        panel.run.side_effect = traffic
+        panel.account_usage(state)
+        self.assertEqual(panel.load()['clients'][0]['usedBytes'], 100)
+        panel.account_usage(panel.load())
+        self.assertEqual(panel.load()['clients'][0]['usedBytes'], 100)
+        counter[:] = [30, 30]
+        panel.account_usage(panel.load())
+        client = panel.load()['clients'][0]
+        self.assertEqual(client['usedBytes'], 160)
+        self.assertEqual(panel.limit_reason(client), 'quota exhausted')
+        self.assertNotIn('PublicKey = client-public', panel.CONFIG.read_text())
+
+    def test_expiry_is_enforced_and_limits_can_be_extended(self):
+        state = self.prepare_awg()
+        state['clients'][0]['expiresAt'] = 1
+        panel.account_usage(state)
+        self.assertNotIn('PublicKey = client-public', panel.AWG_CONFIG.read_text())
+        response = self.request('/api/awg/clients/0123456789abcdef/details', {'expiresAt': 0, 'quotaBytes': 0})
+        self.assertEqual(response.status, 200)
+        self.assertIn('PublicKey = client-public', panel.AWG_CONFIG.read_text())
+        self.assertEqual(self.request('/api/awg/clients/0123456789abcdef/details', {'quotaBytes': -1}).status, 400)
+
     def test_auth_and_csrf(self):
         self.assertEqual(self.request('/api/status', auth=False).status, 401)
         self.assertEqual(self.request('/api/clients', {'name': 'laptop'}, csrf=False).status, 403)
@@ -427,7 +458,7 @@ class PanelTests(unittest.TestCase):
         def awg_run(*args, data=None):
             if args[0] == panel.AWG_BIN + 'awg':
                 self.commands.append(args)
-                if args[1] == 'show' and args[-1] == 'peers':
+                if args[1] == 'show' and args[-1] in ('peers', 'transfer'):
                     return ''
                 if args[1] == 'show':
                     return 'private\tpublic\t51821\t4\t40\t700\toff\nclient-public\tshared\t(none)\t10.204.240.2/32\t0\t123\t456\t25'
